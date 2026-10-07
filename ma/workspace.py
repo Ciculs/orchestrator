@@ -9,13 +9,29 @@ class WorkspaceError(RuntimeError):
     pass
 
 
+def _ensure_diff_git_header(diff_body: str) -> str:
+    if "diff --git " in diff_body:
+        return diff_body
+    m = re.search(r"^\+\+\+\s+(?:b/)?([^\s\n]+)", diff_body, re.M)
+    if m:
+        path = m.group(1).strip()
+        if path != "/dev/null":
+            header = f"diff --git a/{path} b/{path}\n"
+            return header + diff_body
+    return diff_body
+
+
 def extract_diff(text: str) -> str:
-    # First: look for a code block that contains "diff --git "
+    # First: look for a code block that contains "diff --git " or unified diff hunk
     for match in re.finditer(r"```(?:diff|patch)?\s*\n(.*?)```", text, re.S):
         block = match.group(1)
         if "diff --git " in block:
             start = block.find("diff --git ")
             return block[start:].strip() + "\n"
+        if ("\n--- " in block or block.startswith("--- ")) and "\n+++ " in block and "\n@@" in block:
+            start = block.find("--- ")
+            return _ensure_diff_git_header(block[start:].strip() + "\n")
+
     # Second: find "diff --git " anywhere in the text
     start = text.find("diff --git ")
     if start >= 0:
@@ -24,6 +40,19 @@ def extract_diff(text: str) -> str:
         if end_fence >= 0:
             candidate = candidate[:end_fence]
         return candidate.strip() + "\n"
+
+    # Third: find standard diff (--- and +++ and @@) anywhere in the text
+    hunk_idx = text.find("\n@@ ")
+    if hunk_idx >= 0:
+        pre = text[:hunk_idx]
+        diff_start = pre.rfind("\n--- ")
+        if diff_start >= 0:
+            candidate = text[diff_start + 1:]
+            end_fence = candidate.find("```")
+            if end_fence >= 0:
+                candidate = candidate[:end_fence]
+            return _ensure_diff_git_header(candidate.strip() + "\n")
+
     raise WorkspaceError("worker returned no unified git diff")
 
 

@@ -17,6 +17,29 @@ class TaskSpec:
     verify_command: str
     depends_on: list[str]
 
+    def __getitem__(self, item: str):
+        if hasattr(self, item):
+            return getattr(self, item)
+        raise KeyError(item)
+
+    def get(self, item: str, default=None):
+        return getattr(self, item, default)
+
+    def keys(self):
+        return ("id", "goal", "allowed_files", "verify_command", "depends_on")
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "goal": self.goal,
+            "allowed_files": list(self.allowed_files),
+            "verify_command": self.verify_command,
+            "depends_on": list(self.depends_on),
+        }
+
 
 def _clean_and_parse_json(candidate: str):
     """Attempt parsing JSON with various LLM cleanup strategies."""
@@ -195,7 +218,14 @@ def changed_files_from_diff(diff: str) -> list[str]:
             parts = line.split()
             if len(parts) >= 4:
                 path = parts[3][2:] if parts[3].startswith("b/") else parts[3]
-                files.append(path)
+                if path not in files:
+                    files.append(path)
+        elif line.startswith("+++ "):
+            target = line[4:].strip()
+            if target != "/dev/null":
+                path = target[2:] if target.startswith("b/") else target
+                if path not in files:
+                    files.append(path)
     return files
 
 

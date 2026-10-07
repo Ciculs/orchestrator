@@ -173,6 +173,12 @@ class WorkspaceTests(unittest.TestCase):
         output = "Here it is:\n```diff\ndiff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n```"
         self.assertTrue(extract_diff(output).startswith("diff --git"))
 
+    def test_extract_diff_without_diff_git_header(self):
+        output = "Diff generated:\n```diff\n--- /dev/null\n+++ b/src/types.ts\n@@ -0,0 +1,2 @@\n+export interface A {}\n```"
+        extracted = extract_diff(output)
+        self.assertTrue(extracted.startswith("diff --git a/src/types.ts b/src/types.ts"))
+        self.assertIn("+++ b/src/types.ts", extracted)
+
     def test_worktree_applies_patch_and_collects_diff(self):
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d) / "repo"
@@ -730,6 +736,30 @@ class ReplanTaskSpecTests(unittest.TestCase):
                 store.add_evidence(pid, "replan", {"model": "m", "new_tasks": task_ids, "fallback_errors": []})
             finally:
                 store.close()
+
+    def test_taskspec_subscriptable_and_mapping_protocol(self):
+        from ma.tasks import TaskSpec, ready_waves
+        t = TaskSpec(id="TASK-001", goal="Goal 1", allowed_files=["a.py"], verify_command="pytest", depends_on=[])
+        # Test subscripting
+        self.assertEqual(t["id"], "TASK-001")
+        self.assertEqual(t["goal"], "Goal 1")
+        self.assertEqual(t["allowed_files"], ["a.py"])
+        self.assertEqual(t["verify_command"], "pytest")
+        self.assertEqual(t["depends_on"], [])
+        self.assertEqual(t.get("verify_command"), "pytest")
+        self.assertEqual(t.get("nonexistent", "default"), "default")
+        with self.assertRaises(KeyError):
+            _ = t["nonexistent"]
+
+        # Test dict conversion
+        d = dict(t)
+        self.assertEqual(d["id"], "TASK-001")
+        self.assertEqual(d["goal"], "Goal 1")
+
+        # Test ready_waves accepts TaskSpec directly
+        waves = ready_waves([t])
+        self.assertEqual(len(waves), 1)
+        self.assertEqual(waves[0][0]["id"], "TASK-001")
 
 
 class UIPresetTests(unittest.TestCase):
