@@ -1,0 +1,64 @@
+name: ma-ship
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: Ship goal
+        required: true
+        type: string
+      verify:
+        description: Verify command
+        required: true
+        default: python -m unittest discover -s tests -v
+        type: string
+      merge:
+        description: Merge after APPROVE (still needs human approval gate if enabled)
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  ship:
+    # Prefer self-hosted so local 9Router (localhost:20128) is reachable.
+    runs-on: [self-hosted, Windows, ma]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ma
+        run: |
+          python -m pip install -U pip
+          if [ -d "$GITHUB_WORKSPACE/../multi-agent-orchestrator" ]; then
+            python -m pip install -e "$GITHUB_WORKSPACE/../multi-agent-orchestrator"
+          elif [ -d "C:/Users/OS/multi-agent-orchestrator" ]; then
+            python -m pip install -e "C:/Users/OS/multi-agent-orchestrator"
+          else
+            python -m pip install -e .
+          fi
+
+      - name: Doctor (core)
+        run: ma doctor --no-probe
+        env:
+          # Optional shared queue auth for workers on this host
+          MA_QUEUE_TOKEN: ${{ secrets.MA_QUEUE_TOKEN }}
+
+      - name: Ship
+        env:
+          MA_QUEUE_TOKEN: ${{ secrets.MA_QUEUE_TOKEN }}
+        run: |
+          set -e
+          GOAL="${{ github.event.inputs.goal || github.event.pull_request.title }}"
+          VERIFY="${{ github.event.inputs.verify || 'python -m unittest discover -s tests -v' }}"
+          EXTRA=""
+          if [ "${{ github.event.inputs.merge }}" = "true" ]; then EXTRA="--merge --require-approval"; fi
+          echo "Goal: $GOAL"
+          ma ship "$GITHUB_WORKSPACE" "$GOAL" --verify "$VERIFY" --workers 0 $EXTRA

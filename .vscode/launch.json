@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch AI Orchestrator UI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "ma.cli",
+      "args": ["ui", "--port", "20129"],
+      "console": "integratedTerminal"
+    }
+  ]
+}

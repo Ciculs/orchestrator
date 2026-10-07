@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start AI Orchestrator UI",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "ma.cli",
+        "ui",
+        "--port",
+        "20129"
+      ],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": false
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Run MA Doctor",
+      "type": "shell",
+      "command": "python",
+      "args": [
+        "-m",
+        "ma.cli",
+        "doctor"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}
