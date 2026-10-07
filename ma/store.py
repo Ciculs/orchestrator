@@ -30,12 +30,34 @@ class TaskStore:
           id INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, kind TEXT NOT NULL,
           data TEXT NOT NULL, created_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS tasks(
-          id TEXT PRIMARY KEY, project_id TEXT NOT NULL, goal TEXT NOT NULL,
+          id TEXT NOT NULL, project_id TEXT NOT NULL, goal TEXT NOT NULL,
           allowed_files TEXT NOT NULL, verify_command TEXT NOT NULL, depends_on TEXT NOT NULL,
-          status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+          status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          PRIMARY KEY(project_id, id));
         """
         )
+        self._migrate_schema()
         self.db.commit()
+
+    def _migrate_schema(self):
+        try:
+            info = self.db.execute("PRAGMA table_info(tasks)").fetchall()
+            pks = [row["name"] for row in info if row["pk"] > 0]
+            if pks == ["id"]:
+                self.db.executescript(
+                    """
+                    CREATE TABLE tasks_v2(
+                      id TEXT NOT NULL, project_id TEXT NOT NULL, goal TEXT NOT NULL,
+                      allowed_files TEXT NOT NULL, verify_command TEXT NOT NULL, depends_on TEXT NOT NULL,
+                      status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                      PRIMARY KEY (project_id, id));
+                    INSERT OR REPLACE INTO tasks_v2 SELECT * FROM tasks;
+                    DROP TABLE tasks;
+                    ALTER TABLE tasks_v2 RENAME TO tasks;
+                    """
+                )
+        except Exception:
+            pass
 
     def close(self):
         with self._lock:
@@ -120,15 +142,20 @@ class TaskStore:
         with self._lock:
             self.db.execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
             now = int(time.time())
+            seen_ids = set()
             for t in tasks:
+                tid = str(t.get("id", "")).strip()
+                if not tid or tid in seen_ids:
+                    continue
+                seen_ids.add(tid)
                 self.db.execute(
-                    "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO tasks VALUES(?,?,?,?,?,?,?,?,?)",
                     (
-                        t["id"],
+                        tid,
                         project_id,
-                        t["goal"],
-                        json.dumps(t["allowed_files"]),
-                        t["verify_command"],
+                        t.get("goal", ""),
+                        json.dumps(t.get("allowed_files", [])),
+                        t.get("verify_command", ""),
                         json.dumps(t.get("depends_on", [])),
                         t.get("status", "READY"),
                         now,
@@ -151,10 +178,16 @@ class TaskStore:
             out.append(item)
         return out
 
-    def set_task_status(self, task_id: str, status: str):
+    def set_task_status(self, task_id: str, status: str, project_id: str | None = None):
         with self._lock:
-            self.db.execute(
-                "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
-                (status, int(time.time()), task_id),
-            )
+            if project_id:
+                self.db.execute(
+                    "UPDATE tasks SET status=?, updated_at=? WHERE id=? AND project_id=?",
+                    (status, int(time.time()), task_id, project_id),
+                )
+            else:
+                self.db.execute(
+                    "UPDATE tasks SET status=?, updated_at=? WHERE id=?",
+                    (status, int(time.time()), task_id),
+                )
             self.db.commit()

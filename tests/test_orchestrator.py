@@ -339,6 +339,104 @@ class FallbackTests(unittest.TestCase):
             store.close()
 
 
+class TaskStoreResilienceTests(unittest.TestCase):
+    def test_replace_tasks_deduplicates_and_never_violates_unique_constraint(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = TaskStore(Path(d) / "state.sqlite")
+            pid = store.create_project("demo", d, "goal")
+            # Duplicate IDs in task array passed by replan
+            tasks = [
+                {"id": "task-1", "goal": "g1", "allowed_files": ["f1.py"], "verify_command": "true", "depends_on": []},
+                {"id": "task-2", "goal": "g2", "allowed_files": ["f2.py"], "verify_command": "true", "depends_on": []},
+                {"id": "task-1", "goal": "g1-redefined", "allowed_files": ["f1.py"], "verify_command": "true", "depends_on": []},
+            ]
+            # Must not raise sqlite3.IntegrityError: UNIQUE constraint failed: tasks.id
+            store.replace_tasks(pid, tasks)
+            stored = store.list_tasks(pid)
+            self.assertEqual(len(stored), 2)
+            self.assertEqual({t["id"] for t in stored}, {"task-1", "task-2"})
+            store.close()
+
+    def test_tasks_isolation_across_multiple_projects(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = TaskStore(Path(d) / "state.sqlite")
+            pid1 = store.create_project("proj1", d, "goal1")
+            pid2 = store.create_project("proj2", d, "goal2")
+            # Both projects use task-1
+            store.replace_tasks(pid1, [{"id": "task-1", "goal": "g1", "allowed_files": ["a.py"], "verify_command": "true"}])
+            store.replace_tasks(pid2, [{"id": "task-1", "goal": "g2", "allowed_files": ["b.py"], "verify_command": "true"}])
+            t1 = store.list_tasks(pid1)
+            t2 = store.list_tasks(pid2)
+            self.assertEqual(len(t1), 1)
+            self.assertEqual(len(t2), 1)
+            self.assertEqual(t1[0]["goal"], "g1")
+            self.assertEqual(t2[0]["goal"], "g2")
+            store.close()
+
+    def test_legacy_schema_migration_to_composite_pk(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "legacy.sqlite"
+            con = sqlite3.connect(db_path)
+            # Create old schema with single-column PK
+            con.executescript("""
+                CREATE TABLE tasks(
+                  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, goal TEXT NOT NULL,
+                  allowed_files TEXT NOT NULL, verify_command TEXT NOT NULL, depends_on TEXT NOT NULL,
+                  status TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                INSERT INTO tasks VALUES('T1', 'p1', 'g', '[]', 'true', '[]', 'READY', 0, 0);
+            """)
+            con.commit()
+            con.close()
+
+            # TaskStore opens legacy DB and auto-migrates
+            store = TaskStore(db_path)
+            info = store.db.execute("PRAGMA table_info(tasks)").fetchall()
+            pks = [row["name"] for row in info if row["pk"] > 0]
+            self.assertIn("id", pks)
+            self.assertIn("project_id", pks)
+            tasks = store.list_tasks("p1")
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0]["id"], "T1")
+            store.close()
+
+
+class DiffResilienceTests(unittest.TestCase):
+    def test_normalize_unified_diff_adds_plus_to_new_files(self):
+        from ma.workspace import normalize_unified_diff
+
+        raw = """diff --git a/src/App.tsx b/src/App.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/App.tsx
+@@ -0,0 +1,3 @@
+import React from 'react';
+export const App = () => <div>Hello</div>;
+"""
+        normalized = normalize_unified_diff(raw)
+        self.assertIn("+import React", normalized)
+        self.assertIn("+export const App", normalized)
+
+    def test_extract_diff_finds_diff_block_among_multiple_fences(self):
+        text = """Here is the explanation:
+```json
+{"status": "ok"}
+```
+And here is the diff:
+```diff
+diff --git a/calc.py b/calc.py
+--- a/calc.py
++++ b/calc.py
+@@ -1 +1 @@
+-1
++2
+```
+"""
+        extracted = extract_diff(text)
+        self.assertTrue(extracted.startswith("diff --git a/calc.py"))
+
+
+
 class EventsTests(unittest.TestCase):
     def test_emit_and_cancel(self):
         from ma import events

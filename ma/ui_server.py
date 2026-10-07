@@ -249,7 +249,7 @@ class UIRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/roles/batch":
             target_model = body.get("model", "ag/gemini-3.8-flash").strip()
             department_scope = body.get("department", "all")
-            fallbacks = body.get("fallbacks", ["ag/gemini-3-flash", "ntt/gpt-5.6-sol"])
+            fallbacks = body.get("fallbacks", ["ag/gemini-3.7-flash-high", "ag/gemini-3-flash"])
             if not target_model:
                 return self._send_json({"error": "model is required"}, 400)
             try:

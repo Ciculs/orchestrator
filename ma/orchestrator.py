@@ -202,7 +202,7 @@ class Orchestrator:
         allowed = task["allowed_files"]
         self.file_locks.acquire(task_id, allowed, project_id=project_id)
         try:
-            self.store.set_task_status(task_id, "IMPLEMENTING")
+            self.store.set_task_status(task_id, "IMPLEMENTING", project_id=project_id)
             workspace = Workspace(project["repo"], project_id, task_id=task_id)
             workspace.create(base=base)
             snapshot = workspace.snapshot()
@@ -270,7 +270,7 @@ class Orchestrator:
                 if chosen:
                     break
             if not chosen:
-                self.store.set_task_status(task_id, "FAILED")
+                self.store.set_task_status(task_id, "FAILED", project_id=project_id)
                 raise RouterError(f"task {task_id}: all models failed: " + " | ".join(last_errors))
             model, result, diff, tag, fallback_errors = chosen
             workspace.commit(f"ma: {task_id}")
@@ -286,9 +286,9 @@ class Orchestrator:
                     "stderr": proc.stderr[-10000:],
                 }
                 if proc.returncode != 0:
-                    self.store.set_task_status(task_id, "VERIFY_FAILED")
+                    self.store.set_task_status(task_id, "VERIFY_FAILED", project_id=project_id)
                     raise RuntimeError(f"task {task_id} verify failed: {verify_evidence}")
-            self.store.set_task_status(task_id, "IMPLEMENTED")
+            self.store.set_task_status(task_id, "IMPLEMENTED", project_id=project_id)
             evidence = {
                 "task_id": task_id,
                 "model": model,
@@ -384,7 +384,18 @@ class Orchestrator:
                 # keep successful tasks; replace remaining with replan + not-yet-run
                 done_ids = {r["task_id"] for r in all_results}
                 failed_ids = {t["id"] for t, _ in failures}
-                leftovers = [t for t in pending if t["id"] not in done_ids and t["id"] not in failed_ids and t["id"] not in {x["id"] for x in wave}]
+                wave_ids = {x["id"] for x in wave}
+                new_ids = {t.id for t in new_tasks}
+
+                # leftovers: tasks not yet run, excluding wave, failed, and anything redefined in new_tasks
+                leftovers = [
+                    t for t in pending
+                    if t["id"] not in done_ids
+                    and t["id"] not in failed_ids
+                    and t["id"] not in wave_ids
+                    and t["id"] not in new_ids
+                ]
+
                 # wave tasks that failed are dropped in favor of replan
                 pending = leftovers + [
                     {
@@ -397,16 +408,20 @@ class Orchestrator:
                     }
                     for t in new_tasks
                 ]
-                # persist updated remaining task set + successful statuses
-                persisted = []
-                for r in all_results:
-                    # reconstruct minimal success entries from store
-                    pass
+
                 existing = self.store.list_tasks(project_id)
-                kept = [t for t in existing if t["id"] in done_ids]
+                kept = [t for t in existing if t["id"] in done_ids and t["id"] not in new_ids]
                 for t in kept:
                     t["status"] = "IMPLEMENTED"
-                self.store.replace_tasks(project_id, kept + pending)
+
+                combined = []
+                seen_combined = set()
+                for t in kept + pending:
+                    if t["id"] not in seen_combined:
+                        seen_combined.add(t["id"])
+                        combined.append(t)
+
+                self.store.replace_tasks(project_id, combined)
                 self.store.add_evidence(
                     project_id,
                     "replan",
