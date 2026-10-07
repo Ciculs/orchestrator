@@ -463,7 +463,7 @@ async function syncModelsFromRouter() {
 
 async function quickApplyGeminiFlash() {
   const targetModel = 'ag/gemini-3.8-flash-high';
-  const fallbacks = ['ag/gemini-3.8-flash', 'ag/gemini-3.7-flash-high'];
+  const fallbacks = ['ag/gemini-3.8-flash-medium', 'ag/gemini-3.7-flash-high'];
 
   try {
     const res = await fetch('/api/roles/batch', {

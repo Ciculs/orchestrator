@@ -571,5 +571,20 @@ class GateTests(unittest.TestCase):
             require_approve("REJECT no")
 
 
+class RouterTimeoutTests(unittest.TestCase):
+    def test_ninerouter_default_timeout(self):
+        from ma.router import NineRouterClient
+        c = NineRouterClient("http://127.0.0.1:20128", "dummy-key")
+        self.assertEqual(c.timeout, 120)
+
+    def test_cli_parser_timeout(self):
+        from ma.cli import parser
+        p = parser()
+        args = p.parse_args(["ship", "dummy-repo", "dummy-goal"])
+        self.assertEqual(args.timeout, 120)
+        args_custom = p.parse_args(["--timeout", "60", "ship", "dummy-repo", "dummy-goal"])
+        self.assertEqual(args_custom.timeout, 60)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -41,6 +41,7 @@ from .workspace import WorkspaceError
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ma", description="Durable multi-model orchestrator over 9Router")
     p.add_argument("--db", default=str(Path.home() / ".ma" / "state.sqlite"))
+    p.add_argument("--timeout", type=int, default=120, help="HTTP timeout per model call in seconds")
     sub = p.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init")
@@ -87,7 +88,6 @@ def parser() -> argparse.ArgumentParser:
     ship.add_argument("--max-tokens", type=int, default=None)
     ship.add_argument("--max-replans", type=int, default=1)
     ship.add_argument("--workers", type=int, default=0)
-    ship.add_argument("--timeout", type=int, default=120, help="Per-call timeout in seconds (default: 120s)")
     ship.add_argument("--require-approval", action="store_true", help="require ma approve before merge/push")
 
     usage = sub.add_parser("usage")
@@ -242,7 +242,8 @@ def main(argv=None) -> int:
                         continue
                     print(json.dumps({"worker": worker_id, "claimed": job["id"], "repo": job["repo"]}, flush=True))
                     try:
-                        client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=120, attempts=3)
+                        timeout_sec = getattr(args, "timeout", 120)
+                        client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=timeout_sec, attempts=3)
                         orch = Orchestrator(store, client, max_workers=0)
                         pid = store.create_project(f"job-{job['id']}", job["repo"], job["goal"])
                         result = orch.ship(pid, verify_command=job.get("verify_command"), merge=False)
@@ -259,14 +260,13 @@ def main(argv=None) -> int:
         budget = None
         max_replans = 1
         workers = 0
-        call_timeout = 120
         if args.command == "ship":
             budget = Budget(max_calls=args.max_calls, max_tokens=args.max_tokens)
             max_replans = args.max_replans
             workers = args.workers
-            call_timeout = args.timeout
 
-        client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=call_timeout, attempts=3, budget=budget)
+        timeout_sec = getattr(args, "timeout", 120)
+        client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=timeout_sec, attempts=3, budget=budget)
         orchestrator = Orchestrator(store, client, max_workers=workers if args.command == "ship" else 2, budget=budget, max_replans=max_replans)
 
         if args.command == "run":
