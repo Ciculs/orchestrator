@@ -69,6 +69,11 @@
 
     <!-- Right Gateway Status & Actions -->
     <div class="flex items-center space-x-2.5">
+      <button onclick="openSkillModal()" id="btn-skills-manager" title="Quản lý và cài đặt thêm Skill từ skills.sh" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 hover:text-emerald-200 border border-emerald-500/30 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm">
+        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-emerald-400"></i>
+        <span>✨ Kho Skills</span>
+      </button>
+
       <button onclick="quickApplyGeminiFlash()" id="btn-quick-gemini-header" title="Gán nhanh Gemini 3.8 Flash làm Model chính cho tất cả Agent" class="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 hover:text-amber-200 border border-amber-500/30 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm shadow-amber-500/10">
         <i data-lucide="zap" class="w-3.5 h-3.5 fill-amber-400 text-amber-400"></i>
         <span>⚡ Gán Gemini 3.8 Flash</span>
@@ -464,7 +469,22 @@
         <!-- System Prompt / Persona -->
         <div>
           <label class="block font-medium text-slate-300 mb-1">Nhiệm Vụ & System Prompt (Persona)</label>
-          <textarea id="modal-system-prompt" rows="4" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-500 font-mono"></textarea>
+          <textarea id="modal-system-prompt" rows="3" class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-500 font-mono"></textarea>
+        </div>
+
+        <!-- Attached Specialized Skills -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="font-medium text-slate-300 flex items-center space-x-1.5">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5 text-emerald-400"></i>
+              <span>Kỹ Năng Chuyên Môn Đính Kèm (Assigned Agent Skills)</span>
+            </label>
+            <span class="text-[10px] text-emerald-400 font-mono" id="modal-skills-count">0 skills</span>
+          </div>
+          <p class="text-[11px] text-slate-400 mb-2">Quy chuẩn và hướng dẫn từ <span class="font-mono text-slate-300">~/.agents/skills/</span> tự động nạp vào prompt của Role này khi chạy:</p>
+          <div id="modal-skills-list" class="max-h-36 overflow-y-auto p-2.5 rounded-lg bg-slate-950 border border-slate-700 grid grid-cols-1 sm:grid-cols-2 gap-2 font-mono text-[11px]">
+            <!-- Populated dynamically with checkboxes -->
+          </div>
         </div>
       </div>
 
@@ -480,6 +500,62 @@
             <span>Lưu Cấu Hình</span>
           </button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================== -->
+  <!-- MODAL: KHO KỸ NĂNG & CÀI ĐẶT AGENT SKILLS -->
+  <!-- ========================================== -->
+  <div id="skill-modal" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+    <div class="glass-panel bg-slate-900 rounded-2xl w-full max-w-2xl p-6 border border-slate-700 shadow-2xl relative space-y-4">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div class="flex items-center space-x-2">
+          <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+            <i data-lucide="sparkles" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="text-base font-bold text-white">Kho Kỹ Năng Agent (~/.agents/skills)</h3>
+            <span class="text-xs font-mono text-emerald-400" id="skill-modal-count">28 skills đã cài đặt</span>
+          </div>
+        </div>
+        <button onclick="closeSkillModal()" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+
+      <div class="space-y-4 text-xs">
+        <!-- Install Input -->
+        <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+          <label class="block font-medium text-slate-300">Cài đặt Skill mới từ Skills CLI (Package / Repo):</label>
+          <div class="flex space-x-2">
+            <input type="text" id="input-install-skill" placeholder="Ví dụ: vercel-labs/agent-skills@web-design-guidelines" class="flex-1 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-emerald-500">
+            <button onclick="installSkillPackage()" id="btn-submit-install-skill" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition flex items-center space-x-1.5 shadow-lg shadow-emerald-600/30">
+              <i data-lucide="download" class="w-4 h-4"></i>
+              <span>Cài Đặt</span>
+            </button>
+          </div>
+          <div class="flex items-center justify-between text-[11px] text-slate-500">
+            <span>Tìm kiếm hàng ngàn skills trên <a href="https://skills.sh" target="_blank" class="text-emerald-400 hover:underline">skills.sh</a></span>
+            <span class="text-slate-400 font-mono">Lệnh chạy: npx skills add &lt;pkg&gt; -g -y</span>
+          </div>
+        </div>
+
+        <!-- Skills List -->
+        <div>
+          <label class="block font-medium text-slate-300 mb-2 flex items-center justify-between">
+            <span>Danh sách kỹ năng đã cài đặt trên máy:</span>
+            <button onclick="loadSkills()" class="text-emerald-400 hover:text-emerald-300 flex items-center space-x-1">
+              <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+              <span>Làm mới</span>
+            </button>
+          </label>
+          <div id="skill-manager-list" class="max-h-64 overflow-y-auto space-y-2 p-2 rounded-lg bg-slate-950 border border-slate-800">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end pt-3 border-t border-slate-800">
+        <button onclick="closeSkillModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition">Đóng</button>
       </div>
     </div>
   </div>

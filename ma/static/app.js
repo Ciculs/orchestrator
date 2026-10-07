@@ -2,6 +2,7 @@
 
 let currentConfig = null;
 let availableModels = [];
+let installedSkills = [];
 let activeProjectId = null;
 let currentEventSource = null;
 let currentEditingRole = null;
@@ -52,9 +53,25 @@ function switchMissionSubTab(subTabId) {
 async function init() {
   await checkStatus();
   await loadModels();
+  await loadSkills();
   await loadRoles();
   await loadProjectsList();
   lucide.createIcons();
+}
+
+async function loadSkills() {
+  try {
+    const res = await fetch('/api/skills');
+    const data = await res.json();
+    if (data.ok && data.skills) {
+      installedSkills = data.skills;
+      const countEl = document.getElementById('skill-modal-count');
+      if (countEl) countEl.textContent = `${installedSkills.length} skills đã cài đặt`;
+      renderSkillManagerList();
+    }
+  } catch (err) {
+    console.error('Load skills error:', err);
+  }
 }
 
 async function checkStatus() {
@@ -164,6 +181,13 @@ function createRoleCardElement(key, role) {
   card.onclick = () => openRoleModal(key);
 
   const iconName = role.icon || 'bot';
+  const assignedSkills = role.skills || [];
+  const skillsHtml = assignedSkills.length > 0
+    ? `<div class="mt-2.5 flex flex-wrap gap-1 max-h-12 overflow-hidden">
+        ${assignedSkills.slice(0, 3).map(s => `<span class="px-1.5 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 text-[10px] font-mono truncate max-w-[130px]" title="${s}">✨ ${s}</span>`).join('')}
+        ${assignedSkills.length > 3 ? `<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[9px] font-mono">+${assignedSkills.length - 3} skills</span>` : ''}
+      </div>`
+    : '';
 
   card.innerHTML = `
     <div class="flex items-start justify-between">
@@ -183,6 +207,7 @@ function createRoleCardElement(key, role) {
     </div>
     
     <p class="text-xs text-slate-400 mt-2 line-clamp-2 h-8">${role.description || ''}</p>
+    ${skillsHtml}
 
     <div class="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] font-mono">
       <div class="truncate max-w-[170px] text-cyan-400/90 font-medium" title="${role.primary}">
@@ -208,6 +233,8 @@ function openRoleModal(roleKey) {
   populateModelSelect('modal-fallback-model-1', (role.fallbacks && role.fallbacks[0]) || '');
   populateModelSelect('modal-fallback-model-2', (role.fallbacks && role.fallbacks[1]) || '');
 
+  renderRoleSkillsCheckboxes(role.skills || []);
+
   document.getElementById('role-modal').classList.remove('hidden');
   lucide.createIcons();
 }
@@ -215,6 +242,127 @@ function openRoleModal(roleKey) {
 function closeRoleModal() {
   document.getElementById('role-modal').classList.add('hidden');
   currentEditingRole = null;
+}
+
+function renderRoleSkillsCheckboxes(activeSkills) {
+  const container = document.getElementById('modal-skills-list');
+  const countEl = document.getElementById('modal-skills-count');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const activeSet = new Set(activeSkills || []);
+  if (countEl) countEl.textContent = `${activeSet.size}/${installedSkills.length} skills`;
+
+  if (installedSkills.length === 0) {
+    container.innerHTML = '<div class="col-span-2 text-slate-500 text-center py-2">Chưa tìm thấy skill trong ~/.agents/skills/</div>';
+    return;
+  }
+
+  installedSkills.forEach(s => {
+    const label = document.createElement('label');
+    label.className = 'flex items-center space-x-2 p-1.5 rounded hover:bg-slate-900 cursor-pointer border border-slate-800/60 select-none';
+    const isChecked = activeSet.has(s.name);
+    label.innerHTML = `
+      <input type="checkbox" value="${s.name}" ${isChecked ? 'checked' : ''} onchange="updateModalSkillsCount()" class="rounded border-slate-700 text-emerald-500 focus:ring-0 bg-slate-900">
+      <span class="truncate text-slate-300 text-[11px]" title="${s.summary || s.name}">${s.name}</span>
+    `;
+    container.appendChild(label);
+  });
+}
+
+function updateModalSkillsCount() {
+  const container = document.getElementById('modal-skills-list');
+  const countEl = document.getElementById('modal-skills-count');
+  if (!container || !countEl) return;
+  const checked = container.querySelectorAll('input[type="checkbox"]:checked');
+  countEl.textContent = `${checked.length}/${installedSkills.length} skills`;
+}
+
+function getCheckedSkillsFromModal() {
+  const container = document.getElementById('modal-skills-list');
+  if (!container) return [];
+  const checked = container.querySelectorAll('input[type="checkbox"]:checked');
+  return Array.from(checked).map(c => c.value);
+}
+
+// Skill Manager Modal Functions
+function openSkillModal() {
+  loadSkills();
+  document.getElementById('skill-modal').classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeSkillModal() {
+  document.getElementById('skill-modal').classList.add('hidden');
+}
+
+function renderSkillManagerList() {
+  const container = document.getElementById('skill-manager-list');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (installedSkills.length === 0) {
+    container.innerHTML = '<div class="text-slate-500 text-center py-4">Chưa có skill nào được cài đặt.</div>';
+    return;
+  }
+
+  installedSkills.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'p-2.5 rounded-lg bg-slate-900/80 border border-slate-800 flex items-start justify-between space-x-3';
+    const sizeKb = (s.size / 1024).toFixed(1);
+    item.innerHTML = `
+      <div class="space-y-0.5 min-w-0 flex-1">
+        <div class="flex items-center space-x-2">
+          <span class="font-bold text-white text-xs font-mono">${s.name}</span>
+          <span class="text-[10px] text-slate-500 font-mono">${sizeKb} KB</span>
+        </div>
+        <p class="text-[11px] text-slate-400 truncate" title="${s.summary || ''}">${s.summary || ''}</p>
+      </div>
+      <span class="px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-800/60 text-emerald-400 text-[10px] font-mono shrink-0">Installed</span>
+    `;
+    container.appendChild(item);
+  });
+  lucide.createIcons();
+}
+
+async function installSkillPackage() {
+  const input = document.getElementById('input-install-skill');
+  const btn = document.getElementById('btn-submit-install-skill');
+  const pkg = input ? input.value.trim() : '';
+  if (!pkg) {
+    alert('Vui lòng nhập tên gói skill (ví dụ: vercel-labs/agent-skills@web-design-guidelines)');
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>Đang cài...</span>';
+    lucide.createIcons();
+  }
+
+  try {
+    const res = await fetch('/api/skills/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ package: pkg })
+    });
+    const result = await res.json();
+    if (result.ok) {
+      showToast(`Đã cài đặt thành công: ${pkg}`);
+      if (input) input.value = '';
+      await loadSkills();
+    } else {
+      alert(`Lỗi cài đặt skill:\n${result.error || result.stderr || 'Thất bại'}`);
+    }
+  } catch (err) {
+    alert('Lỗi kết nối khi cài đặt skill: ' + err);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="download" class="w-4 h-4"></i><span>Cài Đặt</span>';
+      lucide.createIcons();
+    }
+  }
 }
 
 function populateModelSelect(elementId, selectedValue) {
@@ -259,6 +407,7 @@ async function saveCurrentRoleConfig() {
   const fb1 = document.getElementById('modal-fallback-model-1').value;
   const fb2 = document.getElementById('modal-fallback-model-2').value;
   const system = document.getElementById('modal-system-prompt').value;
+  const skills = getCheckedSkillsFromModal();
 
   const fallbacks = [];
   if (fb1 && fb1 !== primary) fallbacks.push(fb1);
@@ -267,6 +416,7 @@ async function saveCurrentRoleConfig() {
   currentConfig.roles[currentEditingRole].primary = primary;
   currentConfig.roles[currentEditingRole].fallbacks = fallbacks;
   currentConfig.roles[currentEditingRole].system = system;
+  currentConfig.roles[currentEditingRole].skills = skills;
 
   try {
     const res = await fetch('/api/roles', {

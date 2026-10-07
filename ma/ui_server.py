@@ -193,6 +193,14 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"error": str(e), "totals": {"cost_usd": 0, "calls": 0}}, 500)
 
+        if path == "/api/skills":
+            try:
+                from .skills import list_installed_skills
+                skills = list_installed_skills()
+                return self._send_json({"ok": True, "skills": skills})
+            except Exception as e:
+                return self._send_json({"ok": False, "error": str(e)}, 500)
+
         self._send_json({"error": "Not Found"}, 404)
 
     def do_POST(self):
@@ -218,10 +226,23 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                             cfg["roles"][r_id]["system"] = body["system"]
                         elif "system_prompt" in body:
                             cfg["roles"][r_id]["system"] = body["system_prompt"]
+                        if "skills" in body:
+                            cfg["roles"][r_id]["skills"] = body["skills"]
                         save_config(cfg)
                 else:
                     save_config(body)
                 return self._send_json({"ok": True, "config": load_config()})
+            except Exception as e:
+                return self._send_json({"ok": False, "error": str(e)}, 500)
+
+        if path == "/api/skills/install":
+            pkg = body.get("package", "").strip()
+            if not pkg:
+                return self._send_json({"error": "package is required"}, 400)
+            try:
+                from .skills import install_skill
+                res = install_skill(pkg)
+                return self._send_json(res)
             except Exception as e:
                 return self._send_json({"ok": False, "error": str(e)}, 500)
 

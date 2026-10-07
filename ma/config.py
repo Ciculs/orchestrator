@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from .defaults import SYSTEMS
+from .skills import build_skills_instruction
 
 CONFIG_PATH = Path.home() / ".ma" / "config.json"
 
@@ -16,6 +17,12 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ntt/gpt-5.6-sol",
             "fallbacks": ["cx/gpt-5.6-sol", "sol/claude-opus-5", "ntt/claude-sonnet-4.6"],
             "system": SYSTEMS["design"],
+            "skills": [
+                "spec-driven-development",
+                "api-and-interface-design",
+                "documentation-and-adrs",
+                "source-driven-development"
+            ],
             "icon": "compass"
         },
         "critique": {
@@ -25,6 +32,11 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ntt/gpt-5.6-sol",
             "fallbacks": ["ntt/grok-4.5", "ntt/gpt-5.6-luna", "ag/gemini-3.8-flash"],
             "system": SYSTEMS["critique"],
+            "skills": [
+                "security-and-hardening",
+                "security-review",
+                "doubt-driven-development"
+            ],
             "icon": "shield-alert"
         },
         "judgment": {
@@ -34,6 +46,11 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ntt/gpt-5.6-sol",
             "fallbacks": ["ntt/gpt-5.6-luna", "ag/gemini-3.8-flash"],
             "system": SYSTEMS["judgment"],
+            "skills": [
+                "planning-and-task-breakdown",
+                "git-workflow-and-versioning",
+                "idea-refine"
+            ],
             "icon": "scale"
         },
         "implementation": {
@@ -43,6 +60,14 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "cld/glm-5.3",
             "fallbacks": ["ntt/gpt-5.6-sol", "ag/gemini-3.8-flash"],
             "system": SYSTEMS["implementation"],
+            "skills": [
+                "incremental-implementation",
+                "frontend-ui-engineering",
+                "frontend-design",
+                "web-design-guidelines",
+                "test-driven-development",
+                "code-simplification"
+            ],
             "icon": "code"
         },
         "audit": {
@@ -52,6 +77,11 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ntt/gpt-5.6-sol",
             "fallbacks": ["cx/gpt-5.6-sol", "sol/claude-opus-5"],
             "system": SYSTEMS["audit"],
+            "skills": [
+                "code-review-and-quality",
+                "observability-and-instrumentation",
+                "browser-testing-with-devtools"
+            ],
             "icon": "stamp"
         },
         "report": {
@@ -61,6 +91,10 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ag/gemini-3.8-flash",
             "fallbacks": ["ag/gemini-3-flash", "ntt/gpt-5.6-sol"],
             "system": SYSTEMS["report"],
+            "skills": [
+                "shipping-and-launch",
+                "documentation-and-adrs"
+            ],
             "icon": "file-text"
         },
         "scriptwriter": {
@@ -70,6 +104,7 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ntt/gpt-5.6-sol",
             "fallbacks": ["ntt/gpt-5.6-luna", "ntt/gemini-3.8-flash"],
             "system": "You are a professional video copywriter. Write engaging, high-converting video scripts structured into visual scenes, narrations, and on-screen text.",
+            "skills": [],
             "icon": "pen-tool"
         },
         "prompter": {
@@ -79,6 +114,7 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ntt/gemini-3.8-flash",
             "fallbacks": ["ntt/gpt-5.6-sol", "ntt/gpt-5.6-luna"],
             "system": "You are an AI prompt engineer specializing in cinematic, commercial-grade visual prompts for image and video diffusion models.",
+            "skills": [],
             "icon": "image"
         },
         "voice": {
@@ -88,6 +124,7 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "edge-tts:vi-VN-HoaiMyNeural",
             "fallbacks": ["edge-tts:vi-VN-NamMinhNeural"],
             "system": "Voiceover synthesis engine",
+            "skills": [],
             "icon": "mic"
         },
         "video_editor": {
@@ -97,6 +134,7 @@ DEFAULT_ROLES_CONFIG = {
             "primary": "ffmpeg-engine",
             "fallbacks": [],
             "system": "FFmpeg video compositor and effects pipeline",
+            "skills": [],
             "icon": "film"
         }
     },
@@ -134,6 +172,10 @@ def load_config() -> dict:
                 if k not in data["roles"]:
                     data["roles"][k] = v
                     updated = True
+                else:
+                    if "skills" not in data["roles"][k]:
+                        data["roles"][k]["skills"] = v.get("skills", [])
+                        updated = True
             if "departments" not in data:
                 data["departments"] = DEFAULT_ROLES_CONFIG["departments"]
                 updated = True
@@ -148,6 +190,11 @@ def save_config(config: dict) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+
+def get_role_skills(role: str) -> list[str]:
+    cfg = load_config()
+    return cfg.get("roles", {}).get(role, {}).get("skills", [])
 
 
 def get_models_mapping() -> dict[str, str]:
@@ -175,10 +222,16 @@ def get_fallbacks_mapping() -> dict[str, list[str]]:
     return res
 
 
-def get_systems_mapping() -> dict[str, str]:
+def get_systems_mapping(include_skills: bool = True) -> dict[str, str]:
     cfg = load_config()
     res = {}
     for role, item in cfg.get("roles", {}).items():
-        if "system" in item:
-            res[role] = item["system"]
+        base_system = item.get("system", SYSTEMS.get(role, ""))
+        skills = item.get("skills", [])
+        if include_skills and skills:
+            skills_block = build_skills_instruction(skills)
+            res[role] = f"{base_system}\n\n{skills_block}" if skills_block else base_system
+        else:
+            res[role] = base_system
     return res
+
