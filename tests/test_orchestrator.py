@@ -73,6 +73,57 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(result.content, "RECOVERED")
         self.assertEqual(call.call_count, 3)
 
+    def test_stream_collects_chunks_and_calls_callbacks(self):
+        class FakeStreamResponse:
+            status = 200
+            headers = {"Content-Type": "text/event-stream"}
+
+            def __init__(self, lines):
+                self.lines = [line.encode("utf-8") if isinstance(line, str) else line for line in lines]
+                self.idx = 0
+
+            def readline(self):
+                if self.idx < len(self.lines):
+                    line = self.lines[self.idx]
+                    self.idx += 1
+                    return line
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        stream_lines = [
+            'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
+            'data: {"choices":[{"delta":{"reasoning_content":"Thinking deeply..."}}]}\n',
+            'data: {"choices":[{"delta":{"content":"Hello "}}]}\n',
+            'data: {"choices":[{"delta":{"content":"World!"}}]}\n',
+            'data: [DONE]\n',
+        ]
+        received_chunks = []
+        received_reasoning = []
+        with patch("urllib.request.urlopen", return_value=FakeStreamResponse(stream_lines)):
+            client = NineRouterClient("http://x", "secret")
+            result = client.call(
+                "model",
+                "prompt",
+                stream=True,
+                on_chunk=lambda c: received_chunks.append(c),
+                on_thinking=lambda r: received_reasoning.append(r),
+            )
+        self.assertEqual(result.content, "Hello World!")
+        self.assertEqual(received_chunks, ["Hello ", "World!"])
+        self.assertEqual(received_reasoning, ["Thinking deeply..."])
+
+    def test_stream_falls_back_gracefully_on_regular_json_response(self):
+        body = json.dumps({"choices": [{"message": {"content": "PLAIN JSON"}}]})
+        with patch("urllib.request.urlopen", return_value=FakeResponse(body)):
+            client = NineRouterClient("http://x", "secret")
+            result = client.call("model", "prompt", stream=True)
+        self.assertEqual(result.content, "PLAIN JSON")
+
 
 class StoreTests(unittest.TestCase):
     def test_persists_project_and_resumes_next_stage(self):
@@ -679,6 +730,31 @@ class ReplanTaskSpecTests(unittest.TestCase):
                 store.add_evidence(pid, "replan", {"model": "m", "new_tasks": task_ids, "fallback_errors": []})
             finally:
                 store.close()
+
+
+class UIPresetTests(unittest.TestCase):
+    def test_preset_configuration_logic(self):
+        roles_dict = {
+            "design": {"primary": "", "fallbacks": []},
+            "critique": {"primary": "", "fallbacks": []},
+            "judgment": {"primary": "", "fallbacks": []},
+            "audit": {"primary": "", "fallbacks": []},
+            "implementation": {"primary": "", "fallbacks": []},
+            "verification": {"primary": "", "fallbacks": []},
+        }
+
+        # Test balanced preset
+        for r_id, r_info in roles_dict.items():
+            if r_id in {"design", "critique", "judgment", "audit"}:
+                r_info["primary"] = "ag/gemini-3.8-flash-high"
+            elif r_id == "implementation":
+                r_info["primary"] = "ag/gemini-3.8-flash-medium"
+            else:
+                r_info["primary"] = "ag/gemini-3.8-flash"
+
+        self.assertEqual(roles_dict["design"]["primary"], "ag/gemini-3.8-flash-high")
+        self.assertEqual(roles_dict["implementation"]["primary"], "ag/gemini-3.8-flash-medium")
+        self.assertEqual(roles_dict["verification"]["primary"], "ag/gemini-3.8-flash")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +75,95 @@ class Orchestrator:
         self._project_for_usage: str | None = None
         self._dead_models: set[str] = set()
 
+    def _build_stream_handlers(
+        self,
+        project_id: str | None,
+        *,
+        stage: str,
+        model: str,
+        task_id: str | None = None,
+    ):
+        if not project_id:
+            return None, None, lambda: None
+
+        buffer: list[str] = []
+        last_flush = time.monotonic()
+        first_token = True
+        start_time = time.monotonic()
+        reasoning_buffer: list[str] = []
+        last_reasoning_flush = time.monotonic()
+
+        def on_chunk(text: str):
+            nonlocal first_token, last_flush
+            now = time.monotonic()
+            if first_token:
+                first_token = False
+                ttft_ms = int((now - start_time) * 1000)
+                emit(
+                    project_id,
+                    "stream_ttft",
+                    stage=stage,
+                    model=model,
+                    task_id=task_id,
+                    ttft_ms=ttft_ms,
+                )
+            buffer.append(text)
+            if now - last_flush >= 0.2 or sum(len(c) for c in buffer) >= 150:
+                chunk_str = "".join(buffer)
+                buffer.clear()
+                last_flush = now
+                emit(
+                    project_id,
+                    "stream_chunk",
+                    stage=stage,
+                    model=model,
+                    task_id=task_id,
+                    chunk=chunk_str,
+                )
+
+        def on_thinking(reasoning: str):
+            nonlocal last_reasoning_flush
+            now = time.monotonic()
+            reasoning_buffer.append(reasoning)
+            if now - last_reasoning_flush >= 0.25 or sum(len(c) for c in reasoning_buffer) >= 200:
+                chunk_str = "".join(reasoning_buffer)
+                reasoning_buffer.clear()
+                last_reasoning_flush = now
+                emit(
+                    project_id,
+                    "stream_thinking",
+                    stage=stage,
+                    model=model,
+                    task_id=task_id,
+                    chunk=chunk_str,
+                )
+
+        def flush():
+            if reasoning_buffer:
+                chunk_str = "".join(reasoning_buffer)
+                reasoning_buffer.clear()
+                emit(
+                    project_id,
+                    "stream_thinking",
+                    stage=stage,
+                    model=model,
+                    task_id=task_id,
+                    chunk=chunk_str,
+                )
+            if buffer:
+                chunk_str = "".join(buffer)
+                buffer.clear()
+                emit(
+                    project_id,
+                    "stream_chunk",
+                    stage=stage,
+                    model=model,
+                    task_id=task_id,
+                    chunk=chunk_str,
+                )
+
+        return on_chunk, on_thinking, flush
+
     def _call_role(self, role: str, prompt: str, system: str, *, project_id: str | None = None):
         chain = self.fallbacks.get(role) or [self.models[role]]
         seen, models = set(), []
@@ -88,7 +178,24 @@ class Orchestrator:
         errors = []
         for model in models:
             try:
-                result = self.client.call(model, prompt, system=system)
+                on_chunk, on_thinking, flush_stream = self._build_stream_handlers(
+                    project_id, stage=role, model=model
+                )
+                try:
+                    result = self.client.call(
+                        model,
+                        prompt,
+                        system=system,
+                        stream=True,
+                        on_chunk=on_chunk,
+                        on_thinking=on_thinking,
+                    )
+                except TypeError as exc:
+                    if "stream" in str(exc) or "on_chunk" in str(exc):
+                        result = self.client.call(model, prompt, system=system)
+                    else:
+                        raise
+                flush_stream()
                 if self.usage is not None:
                     self.usage.record(
                         model=model,
@@ -240,7 +347,24 @@ class Orchestrator:
                 ):
                     try:
                         impl_sys = self.systems.get("implementation", SYSTEMS["implementation"])
-                        result = self.client.call(model, attempt_prompt, system=impl_sys)
+                        on_chunk, on_thinking, flush_stream = self._build_stream_handlers(
+                            project_id, stage="implementation", model=model, task_id=task_id
+                        )
+                        try:
+                            result = self.client.call(
+                                model,
+                                attempt_prompt,
+                                system=impl_sys,
+                                stream=True,
+                                on_chunk=on_chunk,
+                                on_thinking=on_thinking,
+                            )
+                        except TypeError as exc:
+                            if "stream" in str(exc) or "on_chunk" in str(exc):
+                                result = self.client.call(model, attempt_prompt, system=impl_sys)
+                            else:
+                                raise
+                        flush_stream()
                         if self.usage is not None:
                             self.usage.record(
                                 model=model,
@@ -396,7 +520,7 @@ class Orchestrator:
                     "Do not redo successful tasks. Keep allowed_files minimal."
                 )
                 judge_sys = self.systems.get("judgment", SYSTEMS["judgment"])
-                result, model, errors = self._call_role("judgment", replan_prompt, judge_sys)
+                result, model, errors = self._call_role("judgment", replan_prompt, judge_sys, project_id=project_id)
                 new_tasks = parse_task_dag(require_model_content(result.content))
                 # keep successful tasks; replace remaining with replan + not-yet-run
                 done_ids = {r["task_id"] for r in all_results}

@@ -247,24 +247,54 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": False, "error": str(e)}, 500)
 
         if path == "/api/roles/batch":
+            preset = body.get("preset", "").strip().lower()
             target_model = body.get("model", "ag/gemini-3.8-flash").strip()
             department_scope = body.get("department", "all")
             fallbacks = body.get("fallbacks", ["ag/gemini-3.7-flash-high", "ag/gemini-3-flash"])
-            if not target_model:
-                return self._send_json({"error": "model is required"}, 400)
             try:
                 cfg = load_config()
                 roles_dict = cfg.get("roles", {})
                 updated_count = 0
-                for r_id, r_info in roles_dict.items():
-                    if department_scope and department_scope != "all":
-                        if r_info.get("department") != department_scope:
+
+                if preset == "balanced":
+                    # Smart Leads (Deep Think) + Fast Workers (Speedy Implementation)
+                    for r_id, r_info in roles_dict.items():
+                        if r_id in {"design", "critique", "judgment", "audit"}:
+                            r_info["primary"] = "ag/gemini-3.8-flash-high"
+                            r_info["fallbacks"] = ["ag/gemini-3.8-flash-medium", "ag/gemini-3.7-flash-high"]
+                        elif r_id == "implementation":
+                            r_info["primary"] = "ag/gemini-3.8-flash-medium"
+                            r_info["fallbacks"] = ["ag/gemini-3.8-flash", "ag/gemini-3.7-flash-high"]
+                        else:
+                            r_info["primary"] = "ag/gemini-3.8-flash"
+                            r_info["fallbacks"] = ["ag/gemini-3.8-flash-medium", "ag/gemini-3.7-flash-high"]
+                        updated_count += 1
+                    target_model = "Balanced (Leads: High • Workers: Medium)"
+                elif preset == "speed":
+                    for r_id, r_info in roles_dict.items():
+                        r_info["primary"] = "ag/gemini-3.8-flash"
+                        r_info["fallbacks"] = ["ag/gemini-3.7-flash-high", "ag/gemini-3-flash"]
+                        updated_count += 1
+                    target_model = "ag/gemini-3.8-flash"
+                elif preset == "quality":
+                    for r_id, r_info in roles_dict.items():
+                        r_info["primary"] = "ag/gemini-3.8-flash-high"
+                        r_info["fallbacks"] = ["ag/gemini-3.8-flash-medium", "ag/gemini-3.7-flash-high"]
+                        updated_count += 1
+                    target_model = "ag/gemini-3.8-flash-high"
+                else:
+                    if not target_model:
+                        return self._send_json({"error": "model or preset is required"}, 400)
+                    for r_id, r_info in roles_dict.items():
+                        if department_scope and department_scope != "all":
+                            if r_info.get("department") != department_scope:
+                                continue
+                        if r_id in {"video_editor", "voice"} and department_scope != "all":
                             continue
-                    if r_id in {"video_editor", "voice"} and department_scope != "all":
-                        continue
-                    r_info["primary"] = target_model
-                    r_info["fallbacks"] = [fb for fb in fallbacks if fb != target_model]
-                    updated_count += 1
+                        r_info["primary"] = target_model
+                        r_info["fallbacks"] = [fb for fb in fallbacks if fb != target_model]
+                        updated_count += 1
+
                 save_config(cfg)
                 return self._send_json({
                     "ok": True,
@@ -449,7 +479,7 @@ Hãy tạo 2 prompt tiếng Anh chuẩn:
 
         # Stream existing events then follow new events
         try:
-            for ev in tail_events(project_id, follow=True, sleep_s=0.5, max_idle=300.0):
+            for ev in tail_events(project_id, follow=True, sleep_s=0.08, max_idle=300.0):
                 msg = f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
                 self.wfile.write(msg.encode("utf-8"))
                 self.wfile.flush()

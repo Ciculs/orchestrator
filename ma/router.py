@@ -32,19 +32,31 @@ class NineRouterClient:
         self.attempts = attempts
         self.budget = budget
 
-    def call(self, model: str, prompt: str, *, system: str = "", api: str = "chat") -> ModelResult:
+    def call(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        system: str = "",
+        api: str = "chat",
+        stream: bool = False,
+        on_chunk=None,
+        on_thinking=None,
+    ) -> ModelResult:
+        use_stream = bool(stream or on_chunk or on_thinking)
         if api == "responses":
             endpoint = "/v1/responses"
             payload = {"model": model, "input": prompt, "stream": False}
             if system:
                 payload["instructions"] = system
+            use_stream = False
         else:
             endpoint = "/v1/chat/completions"
             messages = []
             if system:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
-            payload = {"model": model, "messages": messages, "stream": False}
+            payload = {"model": model, "messages": messages, "stream": use_stream}
         request = urllib.request.Request(
             self.base_url + endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -55,7 +67,55 @@ class NineRouterClient:
         for attempt in range(1, self.attempts + 1):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    raw_bytes = response.read()
+                    header_ct = ""
+                    if hasattr(response, "headers") and response.headers:
+                        header_ct = str(response.headers.get("Content-Type") or response.headers.get("content-type") or "").lower()
+                    is_sse = "text/event-stream" in header_ct and hasattr(response, "readline")
+
+                    if use_stream and is_sse:
+                        chunks: list[str] = []
+                        reasoning_chunks: list[str] = []
+                        raw: dict = {"choices": [{"message": {"content": ""}}]}
+                        while True:
+                            line_bytes = response.readline()
+                            if not line_bytes:
+                                break
+                            line_str = line_bytes.decode("utf-8", "replace").strip()
+                            if not line_str or not line_str.startswith("data:"):
+                                continue
+                            data_str = line_str[5:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data_json = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            if "usage" in data_json:
+                                raw["usage"] = data_json["usage"]
+                            choices = data_json.get("choices")
+                            if choices and isinstance(choices, list) and len(choices) > 0:
+                                delta = choices[0].get("delta", {})
+                                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                                if reasoning:
+                                    reasoning_chunks.append(reasoning)
+                                    if on_thinking:
+                                        on_thinking(reasoning)
+                                text = delta.get("content")
+                                if text:
+                                    chunks.append(text)
+                                    if on_chunk:
+                                        on_chunk(text)
+                        content = "".join(chunks)
+                        raw["choices"][0]["message"]["content"] = content
+                        if reasoning_chunks:
+                            raw["choices"][0]["message"]["reasoning_content"] = "".join(reasoning_chunks)
+                    else:
+                        raw_bytes = response.read()
+                        try:
+                            raw = json.loads(raw_bytes.decode("utf-8", "replace"))
+                        except json.JSONDecodeError as exc:
+                            raise RouterError(f"{model}: non-JSON response: {raw_bytes[:300]!r}") from exc
+                        content = self._extract(raw, api)
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")[:1000]
@@ -69,11 +129,6 @@ class NineRouterClient:
                     ) from exc
         else:
             raise RouterError(f"{model}: failed after {self.attempts} attempts: {last_error}")
-        try:
-            raw = json.loads(raw_bytes.decode("utf-8", "replace"))
-        except json.JSONDecodeError as exc:
-            raise RouterError(f"{model}: non-JSON response: {raw_bytes[:300]!r}") from exc
-        content = self._extract(raw, api)
         if not content.strip():
             raise EmptyResponseError(f"{model}: HTTP success but empty model output")
         if self.budget is not None:

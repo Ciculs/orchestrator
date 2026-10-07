@@ -29,13 +29,13 @@ function switchTab(tabId) {
 }
 
 function switchMissionSubTab(subTabId) {
-  const tabs = ['terminal', 'diff', 'tasks', 'artifacts'];
+  const tabs = ['live', 'terminal', 'diff', 'tasks', 'artifacts'];
   tabs.forEach(t => {
     const content = document.getElementById(`subtab-${t}`);
     const btn = document.getElementById(`subtab-btn-${t}`);
     if (content) content.classList.add('hidden');
     if (btn) {
-      btn.classList.remove('border-cyan-400', 'text-cyan-300');
+      btn.classList.remove('border-emerald-400', 'text-emerald-300', 'font-semibold', 'border-cyan-400', 'text-cyan-300');
       btn.classList.add('border-transparent', 'text-slate-400');
     }
   });
@@ -44,8 +44,12 @@ function switchMissionSubTab(subTabId) {
   const targetBtn = document.getElementById(`subtab-btn-${subTabId}`);
   if (targetContent) targetContent.classList.remove('hidden');
   if (targetBtn) {
-    targetBtn.classList.add('border-cyan-400', 'text-cyan-300');
     targetBtn.classList.remove('border-transparent', 'text-slate-400');
+    if (subTabId === 'live') {
+      targetBtn.classList.add('border-emerald-400', 'text-emerald-300', 'font-semibold');
+    } else {
+      targetBtn.classList.add('border-cyan-400', 'text-cyan-300', 'font-semibold');
+    }
   }
 }
 
@@ -475,6 +479,7 @@ async function quickApplyGeminiFlash() {
     if (data.ok && data.config) {
       currentConfig = data.config;
       renderOrgChart();
+      updatePresetButtons('quality');
       showToast(`⚡ Đã thiết lập thành công Gemini 3.8 Flash High cho toàn bộ ${data.updated_count || 'tất cả'} Agent!`);
     } else {
       alert('Lỗi gán model: ' + (data.error || 'Unknown error'));
@@ -482,6 +487,44 @@ async function quickApplyGeminiFlash() {
   } catch (err) {
     alert('Không thể kết nối đến server: ' + err);
   }
+}
+
+async function applyPreset(presetName) {
+  try {
+    const res = await fetch('/api/roles/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset: presetName })
+    });
+    const data = await res.json();
+    if (data.ok && data.config) {
+      currentConfig = data.config;
+      renderOrgChart();
+      updatePresetButtons(presetName);
+      const labels = {
+        balanced: 'Tối Ưu Tốc Độ & Chất Lượng (Lead: 3.8-high, Worker: 3.8-med)',
+        speed: 'Siêu Tốc (Toàn bộ 3.8-flash)',
+        quality: 'Chất Lượng Tối Đa (Toàn bộ 3.8-flash-high)'
+      };
+      showToast(`⚡ Cấu hình: ${labels[presetName] || presetName}`);
+    } else {
+      alert('Lỗi gán preset: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    alert('Không thể kết nối đến server: ' + err);
+  }
+}
+
+function updatePresetButtons(activePreset) {
+  ['balanced', 'speed', 'quality'].forEach(p => {
+    const btn = document.getElementById(`btn-preset-${p}`);
+    if (!btn) return;
+    if (p === activePreset) {
+      btn.classList.add('ring-2', 'ring-cyan-400', 'bg-cyan-950/80', 'text-cyan-200');
+    } else {
+      btn.classList.remove('ring-2', 'ring-cyan-400', 'bg-cyan-950/80', 'text-cyan-200');
+    }
+  });
 }
 
 async function applyPrimaryModelToAllRoles() {
@@ -652,6 +695,172 @@ async function loadProjectDetails(projectId) {
   }
 }
 
+let liveStreamTextBuffer = '';
+let liveThinkingTextBuffer = '';
+let autoScrollEnabled = true;
+let thinkingExpanded = true;
+let isFirstLiveChunk = true;
+
+function toggleAutoScroll() {
+  autoScrollEnabled = !autoScrollEnabled;
+  const btn = document.getElementById('btn-toggle-autoscroll');
+  if (btn) {
+    btn.innerHTML = `<i data-lucide="arrow-down" class="w-3 h-3"></i><span>Auto-scroll: ${autoScrollEnabled ? 'ON' : 'OFF'}</span>`;
+    lucide.createIcons();
+    if (autoScrollEnabled) {
+      btn.classList.add('text-cyan-300');
+      btn.classList.remove('text-slate-500');
+    } else {
+      btn.classList.remove('text-cyan-300');
+      btn.classList.add('text-slate-500');
+    }
+  }
+}
+
+function toggleThinkingDetails() {
+  thinkingExpanded = !thinkingExpanded;
+  const content = document.getElementById('live-thinking-content');
+  const icon = document.getElementById('thinking-expand-icon');
+  if (content && icon) {
+    if (thinkingExpanded) {
+      content.classList.remove('hidden');
+      icon.textContent = 'Thu gọn ▲';
+    } else {
+      content.classList.add('hidden');
+      icon.textContent = 'Mở rộng ▼';
+    }
+  }
+}
+
+function handleLiveStreamEvent(ev) {
+  const eventName = ev.event || '';
+
+  const streamTextEl = document.getElementById('live-stream-text');
+  const streamBox = document.getElementById('live-stream-box');
+  const thinkingBox = document.getElementById('live-thinking-box');
+  const thinkingContent = document.getElementById('live-thinking-content');
+  const ttftBadge = document.getElementById('live-ttft-badge');
+  const tokenCounter = document.getElementById('live-tokens-counter');
+  const roleTitleEl = document.getElementById('live-role-title');
+  const modelBadgeEl = document.getElementById('live-model-badge');
+  const statusSubEl = document.getElementById('live-status-sub');
+  const cursorEl = document.getElementById('live-cursor');
+
+  if (eventName.endsWith('_start') && eventName !== 'ship_start' && eventName !== 'implement_start') {
+    const stageName = ev.stage || eventName.replace('_start', '');
+    isFirstLiveChunk = true;
+    liveStreamTextBuffer = '';
+    liveThinkingTextBuffer = '';
+
+    if (streamTextEl) streamTextEl.textContent = `[${stageName.toUpperCase()}] Đang kết nối 9Router...`;
+    if (thinkingBox) thinkingBox.classList.add('hidden');
+    if (thinkingContent) thinkingContent.textContent = '';
+    if (ttftBadge) ttftBadge.classList.add('hidden');
+    if (tokenCounter) tokenCounter.textContent = '0 ký tự';
+
+    const stageTitles = {
+      design: 'Chief Architect đang thiết kế giải pháp hệ thống...',
+      critique: 'Senior Critic đang phân tích phản biện & tìm lỗ hổng...',
+      judgment: 'Tech Lead đang tổng hợp & lập Task DAG...',
+      implementation: 'Senior Worker đang lập trình giải pháp...',
+      verification: 'QA Engineer đang chạy máy ảo test...',
+      audit: 'Security Auditor đang rà soát an ninh mã nguồn...'
+    };
+
+    if (roleTitleEl) roleTitleEl.textContent = stageTitles[stageName] || `Đang thực hiện ${stageName}...`;
+    if (statusSubEl) statusSubEl.textContent = 'Đang nhận diện ngữ cảnh và chuẩn bị sinh token...';
+    if (cursorEl) cursorEl.classList.remove('hidden');
+    return;
+  }
+
+  if (eventName === 'worker_start') {
+    isFirstLiveChunk = true;
+    liveStreamTextBuffer = '';
+    liveThinkingTextBuffer = '';
+
+    if (streamTextEl) streamTextEl.textContent = `[TASK: ${ev.task_id}] Worker bắt đầu triển khai code...`;
+    if (thinkingBox) thinkingBox.classList.add('hidden');
+    if (thinkingContent) thinkingContent.textContent = '';
+    if (ttftBadge) ttftBadge.classList.add('hidden');
+    if (tokenCounter) tokenCounter.textContent = '0 ký tự';
+
+    if (roleTitleEl) roleTitleEl.textContent = `Worker Agent đang triển khai ${ev.task_id}`;
+    if (modelBadgeEl && ev.model) modelBadgeEl.textContent = ev.model;
+    if (statusSubEl) statusSubEl.textContent = 'Bắt đầu luồng mã nguồn SSE...';
+    if (cursorEl) cursorEl.classList.remove('hidden');
+    return;
+  }
+
+  if (eventName === 'stream_ttft') {
+    if (ttftBadge) {
+      ttftBadge.textContent = `⚡ TTFT: ${ev.ttft_ms}ms`;
+      ttftBadge.classList.remove('hidden');
+    }
+    if (modelBadgeEl && ev.model) modelBadgeEl.textContent = ev.model;
+    if (statusSubEl) statusSubEl.textContent = `Streaming token từ 9Router (TTFT: ${ev.ttft_ms}ms)`;
+    if (cursorEl) cursorEl.classList.remove('hidden');
+    return;
+  }
+
+  if (eventName === 'stream_thinking') {
+    if (thinkingBox) thinkingBox.classList.remove('hidden');
+    if (thinkingContent) {
+      liveThinkingTextBuffer += ev.chunk || '';
+      thinkingContent.textContent = liveThinkingTextBuffer;
+      if (autoScrollEnabled) {
+        thinkingContent.scrollTop = thinkingContent.scrollHeight;
+      }
+    }
+    return;
+  }
+
+  if (eventName === 'stream_chunk') {
+    if (isFirstLiveChunk) {
+      liveStreamTextBuffer = '';
+      isFirstLiveChunk = false;
+    }
+    liveStreamTextBuffer += ev.chunk || '';
+    if (streamTextEl) {
+      streamTextEl.textContent = liveStreamTextBuffer;
+    }
+    if (tokenCounter) {
+      tokenCounter.textContent = `${liveStreamTextBuffer.length} ký tự`;
+    }
+    if (cursorEl) cursorEl.classList.remove('hidden');
+    if (autoScrollEnabled && streamBox) {
+      streamBox.scrollTop = streamBox.scrollHeight;
+    }
+    return;
+  }
+
+  if (eventName.endsWith('_done') || eventName.endsWith('_complete')) {
+    if (cursorEl) cursorEl.classList.add('hidden');
+    if (statusSubEl) {
+      const charCount = ev.chars || liveStreamTextBuffer.length;
+      statusSubEl.textContent = `Hoàn thành (${charCount} ký tự${ev.model ? ', ' + ev.model : ''})`;
+    }
+    if (activeProjectId) {
+      loadProjectDetails(activeProjectId);
+    }
+    return;
+  }
+
+  if (eventName === 'task_dag') {
+    if (activeProjectId) {
+      loadProjectDetails(activeProjectId);
+    }
+    return;
+  }
+
+  if (eventName === 'ship_failed') {
+    if (cursorEl) cursorEl.classList.add('hidden');
+    if (statusSubEl) statusSubEl.textContent = `Thất bại: ${ev.error || 'Unknown error'}`;
+    if (activeProjectId) {
+      loadProjectDetails(activeProjectId);
+    }
+  }
+}
+
 function startEventStream(projectId) {
   if (currentEventSource) {
     currentEventSource.close();
@@ -660,6 +869,19 @@ function startEventStream(projectId) {
   const logsEl = document.getElementById('terminal-logs');
   logsEl.innerHTML = `<div class="text-slate-500">// Bắt đầu stream event cho project ${projectId}...</div>`;
 
+  liveStreamTextBuffer = '';
+  liveThinkingTextBuffer = '';
+  isFirstLiveChunk = true;
+
+  const streamTextEl = document.getElementById('live-stream-text');
+  if (streamTextEl) streamTextEl.textContent = `Đang kết nối live stream cho dự án ${projectId}...`;
+  const thinkingBox = document.getElementById('live-thinking-box');
+  if (thinkingBox) thinkingBox.classList.add('hidden');
+  const ttftBadge = document.getElementById('live-ttft-badge');
+  if (ttftBadge) ttftBadge.classList.add('hidden');
+  const tokenCounter = document.getElementById('live-tokens-counter');
+  if (tokenCounter) tokenCounter.textContent = '0 ký tự';
+
   currentEventSource = new EventSource(`/api/events/${projectId}`);
 
   currentEventSource.onmessage = (e) => {
@@ -667,6 +889,7 @@ function startEventStream(projectId) {
       const ev = JSON.parse(e.data);
       appendTerminalLog(ev);
       updateStageFlow(ev.event, ev);
+      handleLiveStreamEvent(ev);
     } catch (err) {
       console.error(err);
     }
@@ -678,6 +901,10 @@ function startEventStream(projectId) {
 }
 
 function appendTerminalLog(ev) {
+  if (ev.event === 'stream_chunk' || ev.event === 'stream_thinking') {
+    return; // Don't spam terminal log with thousands of raw token chunks
+  }
+
   const logsEl = document.getElementById('terminal-logs');
   const line = document.createElement('div');
   line.className = 'font-mono text-[11px] leading-tight py-0.5 flex space-x-2';
@@ -688,6 +915,7 @@ function appendTerminalLog(ev) {
   let eventClass = 'text-cyan-400';
   if (eventName.includes('fail') || eventName.includes('error')) eventClass = 'text-rose-400 font-bold';
   if (eventName.includes('approve') || eventName.includes('success')) eventClass = 'text-emerald-400 font-bold';
+  if (eventName === 'stream_ttft') eventClass = 'text-amber-300 font-bold';
 
   line.innerHTML = `
     <span class="text-slate-600 select-none">[${timeStr}]</span>
