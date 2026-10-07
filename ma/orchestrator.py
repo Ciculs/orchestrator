@@ -159,6 +159,7 @@ class Orchestrator:
             except Exception as exc:
                 self.store.add_evidence(project_id, "task_dag_parse_error", {"error": str(exc)})
                 emit(project_id, "task_dag_parse_error", error=str(exc))
+                raise RuntimeError(f"Tech Lead Judge failed to produce a valid Task DAG: {exc}") from exc
 
     def verify(self, project_id: str, command: str):
         project = self.store.get_project(project_id)
@@ -312,22 +313,38 @@ class Orchestrator:
         project = self.store.get_project(project_id)
         tasks = self.store.list_tasks(project_id)
         if not tasks:
-            # fallback single synthetic task over whole repo goal
-            tasks = [
-                {
-                    "id": "T1",
-                    "goal": project["goal"],
-                    "allowed_files": allowed_files or ["."],
-                    "verify_command": "python -m unittest discover -s . -v",
-                    "depends_on": [],
-                    "status": "READY",
-                }
-            ]
-            # if allowed is ["."] skip enforce later by expanding? better require real files
-            if tasks[0]["allowed_files"] == ["."]:
-                # keep enforce soft: allowed_files None path in enforce by listing tracked? force user/tasks
-                pass
-            self.store.replace_tasks(project_id, tasks)
+            # Check if judgment stage was recorded and parse DAG from artifact
+            judgment_art = self.store.get_artifact(project_id, "judgment")
+            if judgment_art:
+                try:
+                    parsed = parse_task_dag(judgment_art)
+                    tasks = [
+                        {
+                            "id": t.id,
+                            "goal": t.goal,
+                            "allowed_files": t.allowed_files,
+                            "verify_command": t.verify_command,
+                            "depends_on": t.depends_on,
+                            "status": "READY",
+                        }
+                        for t in parsed
+                    ]
+                    self.store.replace_tasks(project_id, tasks)
+                except Exception as exc:
+                    raise RuntimeError(f"Judgment stage artifact failed to produce valid Task DAG: {exc}") from exc
+            else:
+                # fallback single synthetic task over whole repo goal (e.g. direct implement tests)
+                tasks = [
+                    {
+                        "id": "T1",
+                        "goal": project["goal"],
+                        "allowed_files": allowed_files or ["."],
+                        "verify_command": "python -m unittest discover -s . -v",
+                        "depends_on": [],
+                        "status": "READY",
+                    }
+                ]
+                self.store.replace_tasks(project_id, tasks)
 
         waves = ready_waves(tasks)
         all_results: list[dict] = []

@@ -18,50 +18,101 @@ class TaskSpec:
     depends_on: list[str]
 
 
-def parse_task_dag(text: str) -> list[TaskSpec]:
-    """Extract a JSON task array from model output. Supports fenced JSON."""
-    fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.S)
-    candidate = fenced.group(1) if fenced else None
+def _clean_and_parse_json(candidate: str):
+    """Attempt parsing JSON with various LLM cleanup strategies."""
     if not candidate:
-        start = text.find("[")
-        end = text.rfind("]")
-        if start < 0 or end <= start:
-            raise TaskSpecError("no task JSON array found")
-        candidate = text[start : end + 1]
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise TaskSpecError(f"invalid task JSON: {exc}") from exc
+        return None
+
+    def try_decode(s: str):
+        try:
+            return json.loads(s, strict=False)
+        except Exception:
+            return None
+
+    # 1. Direct try
+    res = try_decode(candidate)
+    if res is not None:
+        return res
+
+    # 2. Fix trailing commas before ] or }
+    no_trailing = re.sub(r",\s*([\]}])", r"\1", candidate)
+    res = try_decode(no_trailing)
+    if res is not None:
+        return res
+
+    # 3. Strip single-line comments // ... or # ...
+    lines = []
+    for line in candidate.splitlines():
+        trimmed = line.strip()
+        if trimmed.startswith("//") or trimmed.startswith("#"):
+            continue
+        lines.append(line)
+    without_comments = "\n".join(lines)
+    res = try_decode(without_comments)
+    if res is not None:
+        return res
+
+    return try_decode(re.sub(r",\s*([\]}])", r"\1", without_comments))
+
+
+def _build_tasks(data: any) -> list[TaskSpec] | None:
+    if isinstance(data, dict):
+        for k in ("tasks", "task_dag", "dag", "plan", "items", "task_list"):
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
     if not isinstance(data, list) or not data:
-        raise TaskSpecError("task DAG must be a non-empty array")
+        return None
+
     tasks = []
     seen = set()
     for item in data:
         if not isinstance(item, dict):
-            raise TaskSpecError("each task must be an object")
+            return None
         tid = str(item.get("id", "")).strip()
         goal = str(item.get("goal", "")).strip()
-        allowed = item.get("allowed_files") or []
+        allowed_raw = item.get("allowed_files")
+        if isinstance(allowed_raw, str):
+            allowed = [allowed_raw.strip()]
+        elif isinstance(allowed_raw, list):
+            allowed = [str(x).strip() for x in allowed_raw if str(x).strip()]
+        else:
+            allowed = []
         verify = str(item.get("verify_command", "")).strip()
-        depends = item.get("depends_on") or []
-        if not tid or not goal or not verify or not isinstance(allowed, list) or not allowed:
-            raise TaskSpecError(f"task missing required fields: {item}")
+        deps_raw = item.get("depends_on")
+        if isinstance(deps_raw, str):
+            depends = [deps_raw.strip()]
+        elif isinstance(deps_raw, list):
+            depends = [str(x).strip() for x in deps_raw if str(x).strip()]
+        else:
+            depends = []
+
+        if not tid or not goal or not verify or not allowed:
+            return None
         if tid in seen:
-            raise TaskSpecError(f"duplicate task id: {tid}")
+            return None
         seen.add(tid)
-        tasks.append(TaskSpec(tid, goal, [str(x) for x in allowed], verify, [str(x) for x in depends]))
+        tasks.append(TaskSpec(tid, goal, allowed, verify, depends))
+
+    if not tasks:
+        return None
+
+    # Sanitize dependencies (drop missing or self dependencies to avoid crashing on minor LLM hallucinations)
     ids = {t.id for t in tasks}
+    sanitized_tasks = []
     for t in tasks:
-        for dep in t.depends_on:
-            if dep not in ids:
-                raise TaskSpecError(f"task {t.id} depends on missing {dep}")
+        valid_deps = [dep for dep in t.depends_on if dep in ids and dep != t.id]
+        sanitized_tasks.append(TaskSpec(t.id, t.goal, t.allowed_files, t.verify_command, valid_deps))
+    tasks = sanitized_tasks
+
+    # Verify acyclicity
     visiting, done = set(), set()
 
     def visit(tid: str):
         if tid in done:
             return
         if tid in visiting:
-            raise TaskSpecError(f"cycle detected at {tid}")
+            raise ValueError(f"cycle detected at {tid}")
         visiting.add(tid)
         task = next(x for x in tasks if x.id == tid)
         for dep in task.depends_on:
@@ -69,9 +120,72 @@ def parse_task_dag(text: str) -> list[TaskSpec]:
         visiting.remove(tid)
         done.add(tid)
 
-    for t in tasks:
-        visit(t.id)
+    try:
+        for t in tasks:
+            visit(t.id)
+    except Exception:
+        return None
+
     return tasks
+
+
+def parse_task_dag(text: str) -> list[TaskSpec]:
+    """Extract a JSON task array from model output. Supports multi-block markdown and robust extraction."""
+    candidates = []
+
+    # 1. Blocks explicitly tagged ```json ... ``` (search backwards since task DAG is typically at the end)
+    for m in reversed(list(re.finditer(r"```json\s*([\s\S]*?)```", text, re.I))):
+        candidates.append(m.group(1).strip())
+
+    # 2. Any code blocks ``` ... ```
+    for m in reversed(list(re.finditer(r"```(?:\w+)?\s*([\s\S]*?)```", text))):
+        c = m.group(1).strip()
+        if c not in candidates:
+            candidates.append(c)
+
+    # 3. Last balanced [ ... ] in text
+    last_open = text.rfind("[")
+    last_close = text.rfind("]")
+    if last_open >= 0 and last_close > last_open:
+        bracket_span = text[last_open : last_close + 1].strip()
+        if bracket_span not in candidates:
+            candidates.append(bracket_span)
+
+    # 4. Entire text between first [ and last ]
+    first_open = text.find("[")
+    if first_open >= 0 and last_close > first_open:
+        span = text[first_open : last_close + 1].strip()
+        if span not in candidates:
+            candidates.append(span)
+
+    # 5. Whole text as fallback
+    if text.strip() not in candidates:
+        candidates.append(text.strip())
+
+    last_err = None
+    for c in candidates:
+        sub_candidates = []
+        s_arr = c.find("[")
+        e_arr = c.rfind("]")
+        if s_arr >= 0 and e_arr > s_arr:
+            sub_candidates.append(c[s_arr : e_arr + 1])
+        s_obj = c.find("{")
+        e_obj = c.rfind("}")
+        if s_obj >= 0 and e_obj > s_obj:
+            sub_candidates.append(c[s_obj : e_obj + 1])
+        sub_candidates.append(c)
+
+        for sub in sub_candidates:
+            data = _clean_and_parse_json(sub)
+            if data is not None:
+                tasks = _build_tasks(data)
+                if tasks:
+                    return tasks
+                last_err = "candidate parsed but failed task schema or cycle check"
+            else:
+                last_err = "candidate failed JSON decode"
+
+    raise TaskSpecError(f"no valid task JSON array found in model output: {last_err}")
 
 
 def changed_files_from_diff(diff: str) -> list[str]:

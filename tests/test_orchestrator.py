@@ -162,6 +162,79 @@ APPROVED PLAN
         self.assertEqual(tasks[0].id, "T1")
         self.assertEqual(tasks[0].allowed_files, ["calc.py"])
 
+    def test_parse_task_dag_with_preceding_code_blocks(self):
+        text = """
+Here is my architectural breakdown:
+```
+[Phase 1: Contracts & Architecture]
+  Task 1: Setup types
+  Task 2: Setup tests
+```
+
+Here is the approved plan:
+```json
+[
+  {
+    "id": "T1",
+    "goal": "define types",
+    "allowed_files": ["types.ts"],
+    "verify_command": "npx tsc --noEmit",
+    "depends_on": []
+  },
+  {
+    "id": "T2",
+    "goal": "implement api",
+    "allowed_files": ["api.ts"],
+    "verify_command": "npx jest",
+    "depends_on": ["T1"]
+  }
+]
+```
+"""
+        tasks = parse_task_dag(text)
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0].id, "T1")
+        self.assertEqual(tasks[1].depends_on, ["T1"])
+
+    def test_parse_task_dag_with_trailing_commas_and_comments(self):
+        text = """
+```json
+// Task DAG plan
+[
+  {
+    "id": "T1",
+    "goal": "create db",
+    "allowed_files": ["db.ts"],
+    "verify_command": "npm test",
+    "depends_on": [],
+  },
+]
+```
+"""
+        tasks = parse_task_dag(text)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].id, "T1")
+
+    def test_parse_task_dag_wrapped_in_object(self):
+        text = """
+```json
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "goal": "setup",
+      "allowed_files": ["setup.py"],
+      "verify_command": "pytest",
+      "depends_on": []
+    }
+  ]
+}
+```
+"""
+        tasks = parse_task_dag(text)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].id, "T1")
+
     def test_enforce_allowed_files_rejects_out_of_scope(self):
         diff = "diff --git a/calc.py b/calc.py\n--- a/calc.py\n+++ b/calc.py\n@@\n+x\ndiff --git a/secret.env b/secret.env\n--- a/secret.env\n+++ b/secret.env\n@@\n+y\n"
         with self.assertRaises(TaskSpecError):
