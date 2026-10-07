@@ -462,8 +462,8 @@ async function syncModelsFromRouter() {
 }
 
 async function quickApplyGeminiFlash() {
-  const targetModel = 'ag/gemini-3.8-flash';
-  const fallbacks = ['ag/gemini-3.7-flash-high', 'ag/gemini-3-flash'];
+  const targetModel = 'ag/gemini-3.8-flash-high';
+  const fallbacks = ['ag/gemini-3.8-flash', 'ag/gemini-3.7-flash-high'];
 
   try {
     const res = await fetch('/api/roles/batch', {
@@ -475,7 +475,7 @@ async function quickApplyGeminiFlash() {
     if (data.ok && data.config) {
       currentConfig = data.config;
       renderOrgChart();
-      showToast(`⚡ Đã thiết lập thành công Gemini 3.8 Flash cho toàn bộ ${data.updated_count || 'tất cả'} Agent!`);
+      showToast(`⚡ Đã thiết lập thành công Gemini 3.8 Flash High cho toàn bộ ${data.updated_count || 'tất cả'} Agent!`);
     } else {
       alert('Lỗi gán model: ' + (data.error || 'Unknown error'));
     }

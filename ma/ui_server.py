@@ -308,6 +308,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 project_id,
                 "--workers",
                 str(workers),
+                "--timeout",
+                "120",
             ]
             if verify:
                 cmd.extend(["--verify", verify])
@@ -377,7 +379,7 @@ Xuất định dạng JSON gồm các scenes:
 """
             errors = []
             try:
-                client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=30)
+                client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=120)
                 for model in models_to_try:
                     try:
                         res = client.call(model, user_prompt, system=system)
@@ -408,7 +410,7 @@ Hãy tạo 2 prompt tiếng Anh chuẩn:
 """
             errors = []
             try:
-                client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=20)
+                client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=120)
                 for model in models_to_try:
                     try:
                         res = client.call(model, user_prompt, system=system)

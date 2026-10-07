@@ -25,7 +25,7 @@ class ModelResult:
 
 
 class NineRouterClient:
-    def __init__(self, base_url: str, api_key: str, timeout: int = 15, attempts: int = 3, budget=None):
+    def __init__(self, base_url: str, api_key: str, timeout: int = 120, attempts: int = 3, budget=None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
