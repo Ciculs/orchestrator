@@ -787,5 +787,148 @@ class UIPresetTests(unittest.TestCase):
         self.assertEqual(roles_dict["verification"]["primary"], "ag/gemini-3.8-flash")
 
 
+class GitPatchNormalizationTests(unittest.TestCase):
+    def test_normalize_unified_diff_windows_dev_null(self):
+        from ma.workspace import normalize_unified_diff
+        raw_patch = (
+            "diff --git a/src/theme.css b/src/theme.css\n"
+            "--- /dev/null\n"
+            "+++ b/src/theme.css\n"
+            "@@ -0,0 +1,999 @@\n"
+            "/*\n"
+            " Office Theme Design Tokens\n"
+            "*/\n"
+            ":root {\n"
+            "  --dept-boss: #f59e0b;\n"
+            "}\n"
+        )
+        norm = normalize_unified_diff(raw_patch)
+        self.assertIn("new file mode 100644", norm)
+        self.assertIn("--- /dev/null", norm)
+        self.assertIn("+++ b/src/theme.css", norm)
+        # Hunk recount should count 6 added lines
+        self.assertIn("@@ -0,0 +1,6 @@", norm)
+
+    def test_normalize_unified_diff_multi_file(self):
+        from ma.workspace import normalize_unified_diff
+        raw_patch = (
+            "--- /dev/null\n"
+            "+++ b/src/a.ts\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+const a = 1;\n"
+            "--- /dev/null\n"
+            "+++ b/src/b.ts\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+const b = 2;\n"
+        )
+        norm = normalize_unified_diff(raw_patch)
+        self.assertIn("diff --git a/src/a.ts b/src/a.ts", norm)
+        self.assertIn("diff --git a/src/b.ts b/src/b.ts", norm)
+        self.assertIn("new file mode 100644", norm)
+
+    def test_extract_diff_multi_blocks(self):
+        from ma.workspace import extract_diff
+        llm_response = (
+            "Here is the code:\n"
+            "```diff\n"
+            "diff --git a/a.ts b/a.ts\n"
+            "--- /dev/null\n"
+            "+++ b/a.ts\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+const a = 1;\n"
+            "```\n"
+            "And the second file:\n"
+            "```diff\n"
+            "diff --git a/b.ts b/b.ts\n"
+            "--- /dev/null\n"
+            "+++ b/b.ts\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+const b = 2;\n"
+            "```\n"
+        )
+        diff = extract_diff(llm_response)
+        self.assertIn("diff --git a/a.ts b/a.ts", diff)
+        self.assertIn("diff --git a/b.ts b/b.ts", diff)
+
+    def test_workspace_apply_patch_and_diff_untracked(self):
+        from ma.workspace import Workspace
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "README.md").write_text("# Test\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            ws = Workspace(repo, "p1", "t1")
+            ws.create()
+            patch = (
+                "diff --git a/src/theme.css b/src/theme.css\n"
+                "--- /dev/null\n"
+                "+++ b/src/theme.css\n"
+                "@@ -0,0 +1,2 @@\n"
+                "+:root {\n"
+                "+  --dept-boss: #f59e0b;\n"
+                "+}\n"
+            )
+            ws.apply_patch(patch)
+            diff = ws.diff()
+            self.assertTrue(len(diff) > 0, "workspace.diff() should not be empty for new files")
+            self.assertIn("src/theme.css", diff)
+            ws.commit("test commit")
+            ws.remove()
+
+    def test_workspace_direct_fallback_on_corrupt_patch(self):
+        from ma.workspace import Workspace
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "README.md").write_text("# Test\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            ws = Workspace(repo, "p2", "t2")
+            ws.create()
+            # Deliberately malformed patch that git apply cannot parse
+            corrupt_patch = (
+                "diff --git a/src/corrupt.ts b/src/corrupt.ts\n"
+                "--- /dev/null\n"
+                "+++ b/src/corrupt.ts\n"
+                "@@ corrupt header @@\n"
+                "+export const magic = 42;\n"
+            )
+            ws.apply_patch(corrupt_patch)
+            diff = ws.diff()
+            self.assertTrue(len(diff) > 0)
+            self.assertIn("src/corrupt.ts", diff)
+            self.assertTrue((ws.path / "src" / "corrupt.ts").exists())
+            ws.commit("test fallback")
+            ws.remove()
+
+    def test_enforce_allowed_files_path_normalization(self):
+        from ma.tasks import enforce_allowed_files
+        diff = (
+            "diff --git a/src/core.ts b/src/core.ts\n"
+            "--- /dev/null\n"
+            "+++ b/src/core.ts\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+export const x = 1;\n"
+        )
+        # Should accept relative prefix ./
+        files1 = enforce_allowed_files(diff, ["./src/core.ts"])
+        self.assertEqual(files1, ["src/core.ts"])
+
+        # Should accept Windows backslash in allowed list
+        files2 = enforce_allowed_files(diff, ["src\\core.ts"])
+        self.assertEqual(files2, ["src/core.ts"])
+
+        # Should accept wildcard directory
+        files3 = enforce_allowed_files(diff, ["src/*"])
+        self.assertEqual(files3, ["src/core.ts"])
+
+
 if __name__ == "__main__":
     unittest.main()

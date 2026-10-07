@@ -233,8 +233,34 @@ def enforce_allowed_files(diff: str, allowed: list[str]) -> list[str]:
     changed = changed_files_from_diff(diff)
     if not changed:
         raise TaskSpecError("diff touches no files")
-    allowed_set = set(allowed)
-    illegal = [f for f in changed if f not in allowed_set]
+
+    def _norm(p: str) -> str:
+        s = p.replace("\\", "/").strip()
+        if s.startswith("./"):
+            s = s[2:]
+        return s
+
+    allowed_norms = {_norm(a) for a in allowed}
+    illegal = []
+    for f in changed:
+        fn = _norm(f)
+        matched = False
+        if fn in allowed_norms:
+            matched = True
+        else:
+            for a in allowed_norms:
+                if a == "." or a == "*":
+                    matched = True
+                    break
+                if a.endswith("/*") and fn.startswith(a[:-2] + "/"):
+                    matched = True
+                    break
+                if a.endswith("/") and fn.startswith(a):
+                    matched = True
+                    break
+        if not matched:
+            illegal.append(f)
+
     if illegal:
         raise TaskSpecError(f"patch touches files outside allowed set: {illegal}")
     return changed
