@@ -442,7 +442,7 @@ class Orchestrator:
                 self.store.add_evidence(
                     project_id,
                     "replan",
-                    {"model": model, "new_tasks": [t["id"] for t in new_tasks], "fallback_errors": errors},
+                    {"model": model, "new_tasks": [t.id for t in new_tasks], "fallback_errors": errors},
                 )
                 wave_idx += 1
                 continue

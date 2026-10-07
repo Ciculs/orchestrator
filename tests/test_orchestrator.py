@@ -659,5 +659,27 @@ class RouterTimeoutTests(unittest.TestCase):
         self.assertEqual(args_custom.timeout, 60)
 
 
+
+class ReplanTaskSpecTests(unittest.TestCase):
+    def test_replan_taskspec_attribute_access(self):
+        from ma.tasks import TaskSpec
+        from ma.store import TaskStore
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "test.sqlite"
+            store = TaskStore(db_path)
+            try:
+                pid = store.create_project("test-proj", "/dummy", "goal")
+                new_tasks = [
+                    TaskSpec(id="TASK-001", goal="Goal 1", allowed_files=["a.py"], verify_command="", depends_on=[]),
+                    TaskSpec(id="TASK-002", goal="Goal 2", allowed_files=["b.py"], verify_command="", depends_on=["TASK-001"]),
+                ]
+                # Verify extracting t.id works and can be stored as evidence
+                task_ids = [t.id for t in new_tasks]
+                self.assertEqual(task_ids, ["TASK-001", "TASK-002"])
+                store.add_evidence(pid, "replan", {"model": "m", "new_tasks": task_ids, "fallback_errors": []})
+            finally:
+                store.close()
+
+
 if __name__ == "__main__":
     unittest.main()
