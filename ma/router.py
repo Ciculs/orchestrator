@@ -100,12 +100,34 @@ class NineRouterClient:
                                     reasoning_chunks.append(reasoning)
                                     if on_thinking:
                                         on_thinking(reasoning)
-                                text = delta.get("content")
+                                text = delta.get("content") or delta.get("text") or choices[0].get("text")
                                 if text:
                                     chunks.append(text)
                                     if on_chunk:
                                         on_chunk(text)
                         content = "".join(chunks)
+                        if not content.strip() and reasoning_chunks:
+                            combined_r = "".join(reasoning_chunks)
+                            if "diff --git" in combined_r:
+                                content = combined_r
+                        # If streaming produced empty output, fallback to non-streaming request
+                        if not content.strip():
+                            try:
+                                non_stream_payload = dict(payload)
+                                non_stream_payload["stream"] = False
+                                req_ns = urllib.request.Request(
+                                    self.base_url + endpoint,
+                                    data=json.dumps(non_stream_payload).encode("utf-8"),
+                                    headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
+                                )
+                                with urllib.request.urlopen(req_ns, timeout=self.timeout) as resp_ns:
+                                    raw_bytes = resp_ns.read()
+                                    raw = json.loads(raw_bytes.decode("utf-8", "replace"))
+                                    content = self._extract(raw, api)
+                                    if content.strip() and on_chunk:
+                                        on_chunk(content)
+                            except Exception:
+                                pass
                         raw["choices"][0]["message"]["content"] = content
                         if reasoning_chunks:
                             raw["choices"][0]["message"]["reasoning_content"] = "".join(reasoning_chunks)
@@ -158,7 +180,15 @@ class NineRouterClient:
     def _extract(raw: dict, api: str) -> str:
         if api == "chat":
             try:
-                value = raw["choices"][0]["message"]["content"]
+                choice = raw["choices"][0]
+                msg = choice.get("message", {})
+                value = msg.get("content")
+                if not value and msg.get("reasoning_content"):
+                    r_val = msg.get("reasoning_content")
+                    if "diff --git" in r_val:
+                        value = r_val
+                if not value:
+                    value = choice.get("text") or ""
                 return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
             except (KeyError, IndexError, TypeError):
                 return ""

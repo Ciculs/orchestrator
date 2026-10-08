@@ -292,7 +292,15 @@ class Orchestrator:
                 legacy = Workspace(project["repo"], project_id)
                 if legacy.path.exists():
                     cwd = legacy.path
-        proc = subprocess.run(command, cwd=cwd, shell=True, text=True, capture_output=True)
+        proc = subprocess.run(
+            command,
+            cwd=cwd,
+            shell=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
         evidence = {
             "command": command,
             "cwd": str(cwd),
@@ -424,7 +432,15 @@ class Orchestrator:
             verify_evidence = None
             if verify_cmd:
                 workspace.ensure_dependencies(verify_cmd)
-                proc = subprocess.run(verify_cmd, cwd=workspace.path, shell=True, text=True, capture_output=True)
+                proc = subprocess.run(
+                    verify_cmd,
+                    cwd=workspace.path,
+                    shell=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    capture_output=True,
+                )
                 verify_evidence = {
                     "command": verify_cmd,
                     "exit_code": proc.returncode,
@@ -873,6 +889,8 @@ class Orchestrator:
                     cwd=repo,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():

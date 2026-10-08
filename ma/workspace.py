@@ -318,7 +318,15 @@ class Workspace:
         cwd: Path | None = None,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess:
-        result = subprocess.run(args, cwd=cwd or self.repo, input=input_text, text=True, capture_output=True)
+        result = subprocess.run(
+            args,
+            cwd=cwd or self.repo,
+            input=input_text,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
         if result.returncode:
             raise WorkspaceError(f"{' '.join(args)} failed: {(result.stderr or result.stdout).strip()}")
         return result
@@ -501,31 +509,80 @@ class Workspace:
         )
         if needs_node:
             dest_nm = self.path / "node_modules"
-            if dest_nm.is_dir() and (dest_nm / ".bin").is_dir():
+
+            # Check if existing dest_nm contains all required dependencies from package.json
+            is_complete = dest_nm.is_dir() and (dest_nm / ".bin").is_dir()
+            if is_complete and pkg_json.exists():
+                try:
+                    import json
+                    pkg_data = json.loads(pkg_json.read_text(encoding="utf-8"))
+                    required = list(pkg_data.get("dependencies", {}).keys()) + list(pkg_data.get("devDependencies", {}).keys())
+                    for req in required:
+                        if not (dest_nm / req).exists():
+                            is_complete = False
+                            break
+                except Exception:
+                    pass
+
+            if is_complete:
                 return
 
+            # If dest_nm exists but is incomplete, remove the junction/dir
+            if os.path.lexists(str(dest_nm)):
+                try:
+                    if sys.platform == "win32":
+                        subprocess.run(["cmd", "/c", "rmdir", str(dest_nm)], capture_output=True)
+                    else:
+                        dest_nm.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
             # Search existing node_modules in repo or sibling worktrees
-            src_nm = None
+            candidates = []
             if (self.repo / "node_modules" / ".bin").is_dir():
-                src_nm = self.repo / "node_modules"
-            else:
-                parent_dir = self.path.parent
-                pattern = f"{self.repo.name}-ma-{self.project_id}-*"
-                for sibling in parent_dir.glob(pattern):
-                    if sibling != self.path:
-                        s_nm = sibling / "node_modules"
-                        if (s_nm / ".bin").is_dir():
-                            src_nm = s_nm
-                            break
-                        elif s_nm.is_dir() and any(s_nm.iterdir()):
-                            src_nm = s_nm
-                            break
+                candidates.append(self.repo / "node_modules")
+            parent_dir = self.path.parent
+            pattern = f"{self.repo.name}-ma-{self.project_id}-*"
+            for sibling in parent_dir.glob(pattern):
+                if sibling != self.path and (sibling / "node_modules" / ".bin").is_dir():
+                    candidates.append(sibling / "node_modules")
+
+            # Pick candidate that satisfies required packages
+            src_nm = None
+            for cand in candidates:
+                cand_ok = True
+                if pkg_json.exists():
+                    try:
+                        import json
+                        pkg_data = json.loads(pkg_json.read_text(encoding="utf-8"))
+                        required = list(pkg_data.get("dependencies", {}).keys()) + list(pkg_data.get("devDependencies", {}).keys())
+                        for req in required:
+                            if not (cand / req).exists():
+                                cand_ok = False
+                                break
+                    except Exception:
+                        pass
+                if cand_ok:
+                    src_nm = cand
+                    break
+
+            if not src_nm and candidates:
+                src_nm = candidates[0]
 
             if src_nm:
                 link_directory(src_nm, dest_nm)
             elif pkg_json.exists():
                 try:
-                    subprocess.run("npm install", cwd=self.path, shell=True, capture_output=True, timeout=120)
+                    subprocess.run(
+                        "npm install",
+                        cwd=self.path,
+                        shell=True,
+                        capture_output=True,
+                        timeout=120,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
                 except Exception:
                     pass
 

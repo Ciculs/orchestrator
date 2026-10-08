@@ -1315,6 +1315,29 @@ class ResumptionPipelineTests(unittest.TestCase):
             finally:
                 ws.remove()
 
+    def test_workspace_run_handles_unicode_vietnamese_input_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "f.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "f.txt"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            ws = Workspace(repo, "proj_unicode", task_id="t_u")
+            try:
+                ws.create()
+                # Test input_text containing Vietnamese characters that fail in cp1252 (e.g. \u1ebf, \u1eb5)
+                vn_text = "/* Sếp - \u1ebf \u1eb5 Tiếng Việt có dấu */\n"
+                # Running a command with input_text should not crash with charmap encode error
+                res = ws._run(["git", "hash-object", "--stdin"], input_text=vn_text)
+                self.assertEqual(res.returncode, 0)
+                self.assertTrue(len(res.stdout.strip()) > 0)
+            finally:
+                ws.remove()
+
 
 if __name__ == "__main__":
     unittest.main()
