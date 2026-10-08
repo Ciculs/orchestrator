@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -269,6 +271,37 @@ def extract_files_from_diff(patch: str) -> dict[str, dict]:
     return files
 
 
+def link_directory(src: Path, dest: Path) -> bool:
+    """Link a directory using NTFS junction on Windows (no admin rights needed) or symlink on Unix."""
+    if not src.exists():
+        return False
+    if os.path.lexists(str(dest)):
+        if dest.exists():
+            return True
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["cmd", "/c", "rmdir", str(dest)], capture_output=True)
+            else:
+                dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+    try:
+        if sys.platform == "win32":
+            res = subprocess.run(["cmd", "/c", "mklink", "/J", str(dest), str(src)], capture_output=True, text=True)
+            if res.returncode == 0:
+                return True
+            try:
+                os.symlink(str(src), str(dest), target_is_directory=True)
+                return True
+            except OSError:
+                return False
+        else:
+            os.symlink(str(src), str(dest), target_is_directory=True)
+            return True
+    except Exception:
+        return False
+
+
 class Workspace:
     def __init__(self, repo: str | Path, project_id: str, task_id: str | None = None):
         self.repo = Path(repo).resolve()
@@ -401,6 +434,21 @@ class Workspace:
         self._run(["git", "add", "-A"], cwd=self.path)
         self._run(["git", "commit", "-m", message], cwd=self.path)
 
+    def branch_exists(self, branch: str) -> bool:
+        return (
+            subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                cwd=self.repo,
+            ).returncode
+            == 0
+        )
+
+    def reset_to_base(self, base: str = "HEAD"):
+        if self.path.exists():
+            base_sha = self._run(["git", "rev-parse", base], cwd=self.repo).stdout.strip()
+            subprocess.run(["git", "reset", "--hard", base_sha], cwd=self.path, capture_output=True)
+            subprocess.run(["git", "clean", "-fd"], cwd=self.path, capture_output=True)
+
     def reset_hard(self):
         if self.path.exists():
             subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=self.path, capture_output=True)
@@ -410,7 +458,76 @@ class Workspace:
         return self._run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.repo).stdout.strip()
 
     def merge_branch(self, branch: str, *, cwd: Path | None = None):
-        self._run(["git", "merge", "--no-ff", "--no-edit", "-m", f"ma: merge {branch}", branch], cwd=cwd or self.path)
+        work_dir = cwd or self.path
+        try:
+            self._run(["git", "merge", "--no-ff", "--no-edit", "-m", f"ma: merge {branch}", branch], cwd=work_dir)
+        except WorkspaceError:
+            try:
+                self._run(
+                    ["git", "merge", "--no-edit", "-X", "theirs", "-m", f"ma: merge {branch}", branch],
+                    cwd=work_dir,
+                )
+            except WorkspaceError:
+                subprocess.run(["git", "merge", "--abort"], cwd=work_dir, capture_output=True)
+                raise
+
+    def ensure_dependencies(self, command: str | None = None):
+        """Ensure common dependencies like node_modules or .venv are linked/installed in this worktree."""
+        if not self.path.exists():
+            return
+
+        # 1. Ensure node_modules/ is ignored in worktree .gitignore
+        gitignore = self.path / ".gitignore"
+        if gitignore.exists():
+            try:
+                content = gitignore.read_text(encoding="utf-8", errors="ignore")
+                if "node_modules" not in content:
+                    gitignore.write_text(content.rstrip() + "\nnode_modules/\n", encoding="utf-8")
+            except Exception:
+                pass
+
+        # 2. Python virtual environments (.venv or venv)
+        for venv_name in (".venv", "venv"):
+            src_venv = self.repo / venv_name
+            dest_venv = self.path / venv_name
+            if src_venv.is_dir() and not os.path.lexists(str(dest_venv)):
+                link_directory(src_venv, dest_venv)
+
+        # 3. Node.js dependencies
+        pkg_json = self.path / "package.json"
+        needs_node = pkg_json.exists() or (
+            command is not None
+            and any(tool in command for tool in ("npm", "npx", "tsc", "jest", "vitest", "eslint", "vite", "node"))
+        )
+        if needs_node:
+            dest_nm = self.path / "node_modules"
+            if dest_nm.is_dir() and (dest_nm / ".bin").is_dir():
+                return
+
+            # Search existing node_modules in repo or sibling worktrees
+            src_nm = None
+            if (self.repo / "node_modules" / ".bin").is_dir():
+                src_nm = self.repo / "node_modules"
+            else:
+                parent_dir = self.path.parent
+                pattern = f"{self.repo.name}-ma-{self.project_id}-*"
+                for sibling in parent_dir.glob(pattern):
+                    if sibling != self.path:
+                        s_nm = sibling / "node_modules"
+                        if (s_nm / ".bin").is_dir():
+                            src_nm = s_nm
+                            break
+                        elif s_nm.is_dir() and any(s_nm.iterdir()):
+                            src_nm = s_nm
+                            break
+
+            if src_nm:
+                link_directory(src_nm, dest_nm)
+            elif pkg_json.exists():
+                try:
+                    subprocess.run("npm install", cwd=self.path, shell=True, capture_output=True, timeout=120)
+                except Exception:
+                    pass
 
     def merge_into_repo(self, message: str = "ma: merge approved worktree") -> dict:
         target = self.current_branch()
@@ -435,4 +552,14 @@ class Workspace:
 
     def remove(self):
         if self.path.exists():
+            for name in ("node_modules", ".venv", "venv"):
+                p = self.path / name
+                if os.path.lexists(str(p)):
+                    try:
+                        if sys.platform == "win32":
+                            subprocess.run(["cmd", "/c", "rmdir", str(p)], capture_output=True)
+                        else:
+                            p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
             self._run(["git", "worktree", "remove", "--force", str(self.path)])

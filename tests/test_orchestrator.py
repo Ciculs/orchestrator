@@ -1255,6 +1255,66 @@ class ResumptionPipelineTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_workspace_branch_exists_and_reset_to_base(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "base.txt").write_text("initial", encoding="utf-8")
+            subprocess.run(["git", "add", "base.txt"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            ws = Workspace(repo, "proj1", task_id="t1")
+            try:
+                ws.create()
+                self.assertTrue(ws.branch_exists("ma/proj1/t1"))
+                self.assertFalse(ws.branch_exists("ma/proj1/nonexistent"))
+
+                # Write a commit in worktree
+                (ws.path / "extra.txt").write_text("extra", encoding="utf-8")
+                ws.commit("added extra")
+                self.assertTrue((ws.path / "extra.txt").exists())
+
+                # reset_to_base should revert extra commit
+                ws.reset_to_base("HEAD")
+                self.assertFalse((ws.path / "extra.txt").exists())
+                self.assertTrue((ws.path / "base.txt").exists())
+            finally:
+                ws.remove()
+
+    def test_workspace_ensure_dependencies_junction_and_gitignore(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            # Create fake node_modules with .bin in repo
+            nm = repo / "node_modules" / ".bin"
+            nm.mkdir(parents=True)
+            (nm / "tsc").write_text("#!/bin/sh\n", encoding="utf-8")
+
+            ws = Workspace(repo, "proj2", task_id="t2")
+            try:
+                ws.create()
+                (ws.path / "package.json").write_text("{}", encoding="utf-8")
+                ws.ensure_dependencies("npx tsc --noEmit")
+
+                # node_modules should be linked
+                self.assertTrue((ws.path / "node_modules" / ".bin").exists())
+
+                # .gitignore in worktree should have node_modules/
+                gi = (ws.path / ".gitignore").read_text(encoding="utf-8")
+                self.assertIn("node_modules/", gi)
+            finally:
+                ws.remove()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -319,6 +319,20 @@ class Orchestrator:
             self.store.set_task_status(task_id, "IMPLEMENTING", project_id=project_id)
             workspace = Workspace(project["repo"], project_id, task_id=task_id)
             workspace.create(base=base)
+            workspace.reset_to_base(base=base)
+
+            # Merge completed prerequisite tasks into this worktree
+            for dep_id in task.get("depends_on", []):
+                dep_branch = f"ma/{project_id}/{dep_id}"
+                if workspace.branch_exists(dep_branch):
+                    try:
+                        workspace.merge_branch(dep_branch)
+                    except Exception:
+                        pass
+
+            # Ensure dependency links (.venv, node_modules) exist
+            workspace.ensure_dependencies()
+
             snapshot = workspace.snapshot()
             allowed_clause = f"ALLOWED FILES ONLY: {allowed}\n"
             prompt = (
@@ -409,6 +423,7 @@ class Orchestrator:
             verify_cmd = task.get("verify_command")
             verify_evidence = None
             if verify_cmd:
+                workspace.ensure_dependencies(verify_cmd)
                 proc = subprocess.run(verify_cmd, cwd=workspace.path, shell=True, text=True, capture_output=True)
                 verify_evidence = {
                     "command": verify_cmd,
@@ -584,6 +599,13 @@ class Orchestrator:
                             new_deps.append(dep)
                     t["depends_on"] = list(dict.fromkeys(new_deps))
 
+                # Collect dependencies of failed tasks so replacement tasks inherit them
+                inherited_deps = set()
+                for failed_task, _ in failures:
+                    for dep in failed_task.get("depends_on", []):
+                        if dep not in failed_ids:
+                            inherited_deps.add(dep)
+
                 # wave tasks that failed are dropped in favor of replan
                 pending = leftovers + [
                     {
@@ -591,7 +613,7 @@ class Orchestrator:
                         "goal": t.goal,
                         "allowed_files": t.allowed_files,
                         "verify_command": t.verify_command,
-                        "depends_on": t.depends_on,
+                        "depends_on": list(dict.fromkeys(t.depends_on + [d for d in inherited_deps if d != t.id])),
                         "status": "READY",
                     }
                     for t in new_tasks
