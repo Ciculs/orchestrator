@@ -588,7 +588,7 @@ Hãy tạo 2 prompt tiếng Anh chuẩn:
                         self.wfile.write(b": ping\n\n")
                         self.wfile.flush()
                         last_ping = now
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             pass
 
 
