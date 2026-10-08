@@ -1213,6 +1213,48 @@ class ResumptionPipelineTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_strip_conflict_markers(self):
+        from ma.workspace import strip_conflict_markers
+
+        bad_json = (
+            '{\n'
+            '  "name": "foo",\n'
+            '<<<<<<< ours\n'
+            '  "version": "0.1.0",\n'
+            '=======\n'
+            '  "version": "0.2.0",\n'
+            '>>>>>>> theirs\n'
+            '  "private": true\n'
+            '}\n'
+        )
+        cleaned = strip_conflict_markers(bad_json)
+        self.assertNotIn("<<<<<<<", cleaned)
+        self.assertNotIn("=======", cleaned)
+        self.assertNotIn(">>>>>>>", cleaned)
+        parsed = json.loads(cleaned)
+        self.assertEqual(parsed["version"], "0.2.0")
+
+    def test_repo_summary_includes_structure_and_manifests(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_path = Path(d)
+            (repo_path / "README.md").write_text("# Test Readme\nHello World", encoding="utf-8")
+            (repo_path / "pyproject.toml").write_text("[project]\nname = 'test'\n", encoding="utf-8")
+            sub = repo_path / "src"
+            sub.mkdir()
+            (sub / "main.py").write_text("print('hello')\n", encoding="utf-8")
+
+            client = NineRouterClient("http://x", "k")
+            store = TaskStore(repo_path / "state.sqlite")
+            try:
+                orch = Orchestrator(store, client)
+                summary = orch._repo_summary(repo_path)
+                self.assertIn("REPOSITORY STRUCTURE", summary)
+                self.assertIn("src/main.py", summary)
+                self.assertIn("Test Readme", summary)
+                self.assertIn("KEY FILE: pyproject.toml", summary)
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

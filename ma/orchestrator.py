@@ -226,7 +226,13 @@ class Orchestrator:
         emit(project_id, "stage_start", stage=stage)
         project = self.store.get_project(project_id)
         context = self._context(project_id, stage)
-        prompt = f"PROJECT GOAL:\n{project['goal']}\n\nREPOSITORY:\n{project['repo']}\n\nCONTEXT:\n{context}"
+        repo_summary = self._repo_summary(project["repo"])
+        prompt = (
+            f"PROJECT GOAL:\n{project['goal']}\n\n"
+            f"REPOSITORY:\n{project['repo']}\n\n"
+            f"{repo_summary}\n\n"
+            f"CONTEXT:\n{context}"
+        )
         result, model, fallback_errors = self._call_role(
             stage, prompt, self.systems.get(stage, SYSTEMS.get(stage, "")), project_id=project_id
         )
@@ -831,6 +837,87 @@ class Orchestrator:
             preflight=preflight,
             require_approval=require_approval,
         )
+
+    def _repo_summary(self, repo_path: str | Path, max_chars: int = 16000) -> str:
+        repo = Path(repo_path).resolve()
+        if not repo.exists() or not repo.is_dir():
+            return f"REPOSITORY STRUCTURE:\n[Path {repo} does not exist or is not a directory]"
+
+        files: list[str] = []
+        if (repo / ".git").exists():
+            try:
+                proc = subprocess.run(
+                    ["git", "ls-files"],
+                    cwd=repo,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    files = [f.strip() for f in proc.stdout.splitlines() if f.strip()]
+            except Exception:
+                pass
+
+        if not files:
+            ignore_dirs = {
+                ".git", "__pycache__", "node_modules", ".venv", "venv",
+                "env", "dist", "build", ".idea", ".vscode", ".tox", ".eggs"
+            }
+            try:
+                for root, dirs, filenames in os.walk(repo):
+                    dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+                    rel_dir = Path(root).relative_to(repo)
+                    for fn in filenames:
+                        if fn.startswith(".") or fn.endswith((".pyc", ".pyo")):
+                            continue
+                        rel_path = (rel_dir / fn).as_posix() if str(rel_dir) != "." else fn
+                        files.append(rel_path)
+                        if len(files) >= 300:
+                            break
+                    if len(files) >= 300:
+                        break
+            except Exception:
+                pass
+
+        total_files = len(files)
+        display_files = files[:120]
+        tree_lines = [f"- {f}" for f in display_files]
+        if total_files > len(display_files):
+            tree_lines.append(f"... and {total_files - len(display_files)} more files")
+
+        parts = [
+            f"### REPOSITORY STRUCTURE ({repo.name}):",
+            f"Total files: {total_files}",
+            "\n".join(tree_lines),
+        ]
+
+        key_files = [
+            ("README.md", 3000),
+            ("pyproject.toml", 2000),
+            ("requirements.txt", 1500),
+            ("package.json", 2000),
+            ("Cargo.toml", 1500),
+            ("go.mod", 1500),
+        ]
+
+        current_len = sum(len(p) for p in parts)
+        for fname, budget in key_files:
+            target = repo / fname
+            if target.exists() and target.is_file():
+                try:
+                    content = target.read_text(encoding="utf-8", errors="replace")
+                    snippet = content[:budget].strip()
+                    if len(content) > budget:
+                        snippet += "\n[... truncated ...]"
+                    block = f"\n### KEY FILE: {fname}\n{snippet}"
+                    if current_len + len(block) > max_chars:
+                        break
+                    parts.append(block)
+                    current_len += len(block)
+                except Exception:
+                    pass
+
+        return "\n\n".join(parts)
 
     def _context(self, project_id: str, stage: str) -> str:
         required = {
