@@ -930,5 +930,185 @@ class GitPatchNormalizationTests(unittest.TestCase):
         self.assertEqual(files3, ["src/core.ts"])
 
 
+class ResumptionPipelineTests(unittest.TestCase):
+    def test_ready_waves_with_pre_completed_done_tasks(self):
+        tasks = [
+            {"id": "T2", "depends_on": ["T1"], "status": "READY"},
+            {"id": "T3", "depends_on": ["T2"], "status": "READY"},
+        ]
+        # T1 was already completed in a prior session
+        waves = ready_waves(tasks, done={"T1"})
+        self.assertEqual(len(waves), 2)
+        self.assertEqual([t["id"] for t in waves[0]], ["T2"])
+        self.assertEqual([t["id"] for t in waves[1]], ["T3"])
+
+    def test_store_list_evidence_and_update_project_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "test.db"
+            store = TaskStore(db_path)
+            try:
+                pid = store.create_project("test", "/tmp", "goal")
+                store.add_evidence(pid, "task_implementation", {"task_id": "T1", "branch": "b1"})
+                store.add_evidence(pid, "other", {"info": 123})
+                store.add_evidence(pid, "task_implementation", {"task_id": "T2", "branch": "b2"})
+
+                all_ev = store.list_evidence(pid)
+                self.assertEqual(len(all_ev), 3)
+
+                impl_ev = store.list_evidence(pid, kind="task_implementation")
+                self.assertEqual(len(impl_ev), 2)
+                self.assertEqual(impl_ev[0]["data"]["task_id"], "T1")
+                self.assertEqual(impl_ev[1]["data"]["task_id"], "T2")
+
+                store.update_project_status(pid, "FAILED")
+                proj = store.get_project(pid)
+                self.assertEqual(proj["status"], "FAILED")
+            finally:
+                store.close()
+
+    def test_router_retries_on_http_429(self):
+        import urllib.error
+        body = json.dumps({"choices": [{"message": {"content": "SUCCESS_AFTER_429"}}]})
+        err_429 = urllib.error.HTTPError("http://x", 429, "Too Many Requests", {}, None)
+        with patch("time.sleep"):  # don't wait in tests
+            with patch("urllib.request.urlopen", side_effect=[err_429, FakeResponse(body)]) as call:
+                client = NineRouterClient("http://x", "key", timeout=5, attempts=2)
+                res = client.call("model", "prompt")
+                self.assertEqual(res.content, "SUCCESS_AFTER_429")
+                self.assertEqual(call.call_count, 2)
+
+    def test_orchestrator_resume_when_already_done(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "test.db"
+            store = TaskStore(db_path)
+            try:
+                pid = store.create_project("test", "/tmp", "goal")
+                # Record all stages as completed
+                from ma.store import STAGES
+                for st in STAGES:
+                    store.record_stage(pid, st, "m", "p", "art")
+
+                orch = Orchestrator(store, NineRouterClient("http://x", "k"))
+                res = orch.resume(pid)
+                self.assertEqual(res["status"], "DONE")
+                self.assertIn("already completed", res["message"])
+            finally:
+                store.close()
+
+    def test_orchestrator_resume_skips_completed_stages(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "README.md").write_text("# Test\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            db_path = Path(d) / "test.db"
+            store = TaskStore(db_path)
+            try:
+                pid = store.create_project("test", str(repo), "goal")
+                # Pre-complete design and critique
+                store.record_stage(pid, "design", "model1", "prompt", "design artifact")
+                store.record_stage(pid, "critique", "model2", "prompt", "critique artifact")
+                store.update_project_status(pid, "FAILED")
+
+                called_stages = []
+                def fake_run_stage(project_id, stage):
+                    called_stages.append(stage)
+                    if stage == "judgment":
+                        # Record valid json tasks
+                        tasks_json = json.dumps([{"id": "T1", "goal": "g", "allowed_files": ["."], "verify_command": "", "depends_on": []}])
+                        store.record_stage(project_id, stage, "model", "p", tasks_json)
+                    else:
+                        store.record_stage(project_id, stage, "model", "p", "art")
+
+                client = NineRouterClient("http://x", "k")
+                orch = Orchestrator(store, client)
+                orch.run_stage = fake_run_stage
+
+                # Resuming should start from judgment, NOT re-run design or critique
+                next_st = store.next_stage(pid)
+                self.assertEqual(next_st, "judgment")
+            finally:
+                store.close()
+
+    def test_orchestrator_implement_skips_already_implemented_tasks(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "README.md").write_text("# Test\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            db_path = Path(d) / "test.db"
+            store = TaskStore(db_path)
+            try:
+                pid = store.create_project("test", str(repo), "goal")
+                store.record_stage(pid, "design", "m", "p", "art")
+                store.record_stage(pid, "critique", "m", "p", "art")
+                store.record_stage(pid, "judgment", "m", "p", "art")
+
+                # Create T1 task branch in git
+                subprocess.run(["git", "checkout", "-b", f"ma/{pid}/T1"], cwd=repo, capture_output=True)
+                (repo / "file1.txt").write_text("content 1\n", encoding="utf-8")
+                subprocess.run(["git", "add", "file1.txt"], cwd=repo, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "ma: T1"], cwd=repo, capture_output=True)
+                subprocess.run(["git", "checkout", "master"], cwd=repo, capture_output=True)
+
+                # Set up tasks in DB: T1 is IMPLEMENTED, T2 is FAILED and depends on T1
+                tasks = [
+                    {"id": "T1", "goal": "make file1", "allowed_files": ["file1.txt"], "verify_command": "", "depends_on": [], "status": "IMPLEMENTED"},
+                    {"id": "T2", "goal": "make file2", "allowed_files": ["file2.txt"], "verify_command": "", "depends_on": ["T1"], "status": "FAILED"},
+                ]
+                store.replace_tasks(pid, tasks)
+                store.set_task_status("T1", "IMPLEMENTED", project_id=pid)
+                store.set_task_status("T2", "FAILED", project_id=pid)
+                store.add_evidence(pid, "task_implementation", {
+                    "task_id": "T1",
+                    "branch": f"ma/{pid}/T1",
+                    "status": "IMPLEMENTED",
+                })
+
+                client = NineRouterClient("http://x", "k")
+                orch = Orchestrator(store, client)
+
+                implemented_calls = []
+                def fake_implement_one(project, project_id, task):
+                    implemented_calls.append(task["id"])
+                    # Create T2 branch
+                    subprocess.run(["git", "checkout", "-b", f"ma/{project_id}/{task['id']}"], cwd=repo, capture_output=True)
+                    (repo / "file2.txt").write_text("content 2\n", encoding="utf-8")
+                    subprocess.run(["git", "add", "file2.txt"], cwd=repo, capture_output=True)
+                    subprocess.run(["git", "commit", "-m", "ma: T2"], cwd=repo, capture_output=True)
+                    subprocess.run(["git", "checkout", "master"], cwd=repo, capture_output=True)
+                    store.set_task_status(task["id"], "IMPLEMENTED", project_id=project_id)
+                    ev = {"task_id": task["id"], "branch": f"ma/{project_id}/{task['id']}", "status": "IMPLEMENTED"}
+                    store.add_evidence(project_id, "task_implementation", ev)
+                    return ev
+
+                orch._implement_one_task = fake_implement_one
+                res = orch.implement(pid)
+
+                # T1 was already IMPLEMENTED, so only T2 should have been executed!
+                self.assertEqual(implemented_calls, ["T2"])
+                # Both tasks should be in final results
+                task_ids = [t["task_id"] for t in res["tasks"]]
+                self.assertIn("T1", task_ids)
+                self.assertIn("T2", task_ids)
+
+                # Integration worktree should contain both files
+                integration_path = Path(res["integration"])
+                self.assertTrue((integration_path / "file1.txt").exists())
+                self.assertTrue((integration_path / "file2.txt").exists())
+            finally:
+                store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -119,7 +119,20 @@ class NineRouterClient:
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")[:1000]
+                if exc.code in {429, 500, 502, 503, 504} and attempt < self.attempts:
+                    last_error = exc
+                    time.sleep(min(2 * attempt, 10))
+                    continue
                 raise RouterError(f"{model}: HTTP {exc.code}: {detail}") from exc
+            except (urllib.error.URLError, ConnectionError, TimeoutError, TimeoutError) as exc:
+                last_error = exc
+                if attempt < self.attempts:
+                    time.sleep(min(2 * attempt, 10))
+                    continue
+                raise RouterError(
+                    f"{model}: failed after {self.attempts} attempts "
+                    f"({self.timeout}s each): {type(exc).__name__}: {exc}"
+                ) from exc
             except Exception as exc:
                 last_error = exc
                 if attempt == self.attempts:

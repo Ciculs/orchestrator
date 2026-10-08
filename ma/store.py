@@ -191,3 +191,31 @@ class TaskStore:
                     (status, int(time.time()), task_id),
                 )
             self.db.commit()
+
+    def update_project_status(self, project_id: str, status: str):
+        with self._lock:
+            now = int(time.time())
+            self.db.execute("UPDATE projects SET status=?, updated_at=? WHERE id=?", (status, now, project_id))
+            self.db.commit()
+
+    def list_evidence(self, project_id: str, kind: str | None = None) -> list[dict]:
+        with self._lock:
+            if kind:
+                rows = self.db.execute(
+                    "SELECT id, project_id, kind, data, created_at FROM evidence WHERE project_id=? AND kind=? ORDER BY id",
+                    (project_id, kind),
+                ).fetchall()
+            else:
+                rows = self.db.execute(
+                    "SELECT id, project_id, kind, data, created_at FROM evidence WHERE project_id=? ORDER BY id",
+                    (project_id,),
+                ).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["data"] = json.loads(item["data"])
+            except Exception:
+                pass
+            out.append(item)
+        return out

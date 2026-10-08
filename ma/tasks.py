@@ -270,20 +270,20 @@ def files_overlap(a: list[str], b: list[str]) -> bool:
     return bool(set(a) & set(b))
 
 
-def ready_waves(tasks: list[dict]) -> list[list[dict]]:
+def ready_waves(tasks: list[dict], done: set[str] | None = None) -> list[list[dict]]:
     """
     Partition tasks into execution waves.
     A task is ready when all depends_on are done in previous waves.
     Within a wave, tasks must not share allowed_files (file lock).
     """
     remaining = {t["id"]: dict(t) for t in tasks}
-    done: set[str] = set()
+    done_set: set[str] = set(done) if done else set()
     waves: list[list[dict]] = []
     while remaining:
         candidates = [
             t
             for t in remaining.values()
-            if all(dep in done for dep in t.get("depends_on", []))
+            if all(dep in done_set for dep in t.get("depends_on", []))
         ]
         if not candidates:
             raise TaskSpecError(f"deadlock in task DAG; remaining={list(remaining)}")
@@ -304,6 +304,6 @@ def ready_waves(tasks: list[dict]) -> list[list[dict]]:
             wave = [candidates[0]]
         for t in wave:
             remaining.pop(t["id"])
-            done.add(t["id"])
+            done_set.add(t["id"])
         waves.append(wave)
     return waves

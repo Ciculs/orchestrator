@@ -352,6 +352,44 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             threading.Thread(target=run_ship_proc, daemon=True).start()
             return self._send_json({"ok": True, "project_id": project_id})
 
+        if path == "/api/resume":
+            project_id = body.get("project_id", "").strip()
+            if not project_id:
+                return self._send_json({"error": "project_id is required"}, 400)
+            verify = body.get("verify")
+            require_approval = body.get("require_approval", True)
+            workers = int(body.get("workers", 0))
+
+            store = TaskStore(self.store_path)
+            try:
+                project = store.get_project(project_id)
+            except KeyError:
+                return self._send_json({"error": f"Project not found: {project_id}"}, 404)
+            finally:
+                store.close()
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "ma.cli",
+                "--timeout",
+                "120",
+                "resume",
+                project_id,
+                "--workers",
+                str(workers),
+            ]
+            if verify:
+                cmd.extend(["--verify", verify])
+            if require_approval:
+                cmd.append("--require-approval")
+
+            def run_resume_proc():
+                subprocess.run(cmd, check=False)
+
+            threading.Thread(target=run_resume_proc, daemon=True).start()
+            return self._send_json({"ok": True, "project_id": project_id})
+
         if path == "/api/approve":
             project_id = body.get("project_id")
             note = body.get("note", "approved via web UI")

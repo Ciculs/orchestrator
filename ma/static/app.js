@@ -614,17 +614,22 @@ async function loadProjectsList() {
       item.onclick = () => selectProject(p.id);
 
       const statusColor = p.status === 'DONE' ? 'text-emerald-400 bg-emerald-950' : (p.status.includes('FAIL') ? 'text-rose-400 bg-rose-950' : 'text-cyan-400 bg-cyan-950');
+      const canResume = p.status !== 'DONE';
 
       item.innerHTML = `
         <div class="flex items-center justify-between">
           <span class="text-xs font-mono font-bold text-white">${p.id}</span>
-          <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor}">${p.status}</span>
+          <div class="flex items-center space-x-1.5">
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor}">${p.status}</span>
+            ${canResume ? `<button onclick="event.stopPropagation(); quickResumeProject('${p.id}')" title="Tiếp tục chạy dự án" class="p-1 rounded hover:bg-emerald-900/60 text-emerald-400 border border-emerald-800/60 bg-emerald-950/40 transition"><i data-lucide="play" class="w-2.5 h-2.5"></i></button>` : ''}
+          </div>
         </div>
         <div class="text-xs text-slate-300 mt-1 truncate" title="${p.goal}">${p.goal}</div>
         <div class="text-[10px] text-slate-500 mt-1 font-mono truncate">${p.repo}</div>
       `;
       listEl.appendChild(item);
     });
+    lucide.createIcons();
   } catch (err) {
     console.error('Load projects error:', err);
   }
@@ -650,6 +655,16 @@ async function loadProjectDetails(projectId) {
     const p = data.project;
     document.getElementById('current-project-goal').textContent = p.goal;
     document.getElementById('current-project-status').textContent = p.status;
+
+    // Show or hide Resume button
+    const resumeBtn = document.getElementById('btn-resume-project');
+    if (resumeBtn) {
+      if (p.status !== 'DONE') {
+        resumeBtn.classList.remove('hidden');
+      } else {
+        resumeBtn.classList.add('hidden');
+      }
+    }
 
     // Diff Viewer
     const diffEl = document.getElementById('diff-viewer');
@@ -1011,6 +1026,45 @@ async function handleCancelProject(hard) {
   } catch (err) {
     alert('Lỗi huỷ: ' + err);
   }
+}
+
+async function handleResumeProject() {
+  if (!activeProjectId) return;
+  const resumeBtn = document.getElementById('btn-resume-project');
+  if (resumeBtn) {
+    resumeBtn.disabled = true;
+    resumeBtn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i><span>Đang tiếp tục...</span>';
+    lucide.createIcons();
+  }
+  try {
+    const res = await fetch('/api/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: activeProjectId })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`Đã tiếp tục chạy dự án ${activeProjectId}!`);
+      startEventStream(activeProjectId);
+      loadProjectDetails(activeProjectId);
+      loadProjectsList();
+    } else {
+      alert('Lỗi tiếp tục dự án: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    alert('Lỗi kết nối: ' + err);
+  } finally {
+    if (resumeBtn) {
+      resumeBtn.disabled = false;
+      resumeBtn.innerHTML = '<i data-lucide="play" class="w-3.5 h-3.5"></i><span>Tiếp Tục Chạy</span>';
+      lucide.createIcons();
+    }
+  }
+}
+
+async function quickResumeProject(projectId) {
+  selectProject(projectId);
+  handleResumeProject();
 }
 
 // Media Studio

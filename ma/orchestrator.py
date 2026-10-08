@@ -470,12 +470,42 @@ class Orchestrator:
                 ]
                 self.store.replace_tasks(project_id, tasks)
 
-        waves = ready_waves(tasks)
+        # Resumption support: reset any failed tasks to READY
+        for t in tasks:
+            if t.get("status") in {"FAILED", "VERIFY_FAILED"}:
+                t["status"] = "READY"
+                self.store.set_task_status(t["id"], "READY", project_id=project_id)
+
+        # Identify tasks already completed in previous runs
+        already_done_tasks = [t for t in tasks if t.get("status") == "IMPLEMENTED"]
+        already_done_ids = {t["id"] for t in already_done_tasks}
+
         all_results: list[dict] = []
-        pending = list(tasks)
+        if already_done_ids:
+            past_evidence = self.store.list_evidence(project_id, kind="task_implementation")
+            ev_map = {}
+            for ev in past_evidence:
+                data = ev.get("data", {})
+                tid = data.get("task_id")
+                if tid in already_done_ids:
+                    ev_map[tid] = data
+
+            for t in already_done_tasks:
+                tid = t["id"]
+                if tid in ev_map:
+                    all_results.append(ev_map[tid])
+                else:
+                    all_results.append({
+                        "task_id": tid,
+                        "branch": f"ma/{project_id}/{tid}",
+                        "status": "IMPLEMENTED",
+                    })
+
+        pending = [t for t in tasks if t["id"] not in already_done_ids]
+        done_ids = set(already_done_ids)
         wave_idx = 0
         while pending:
-            waves = ready_waves(pending)
+            waves = ready_waves(pending, done=done_ids)
             wave = waves[0]
             self.store.add_evidence(project_id, "wave_start", {"wave": wave_idx, "tasks": [t["id"] for t in wave]})
             wave_results = []
@@ -572,6 +602,7 @@ class Orchestrator:
                 continue
             # remove completed wave from pending
             done_wave = {t["id"] for t in wave}
+            done_ids.update(done_wave)
             pending = [t for t in pending if t["id"] not in done_wave]
             wave_idx += 1
 
@@ -714,15 +745,59 @@ class Orchestrator:
             clear_pid(project_id)
             return result
         except CancelledError:
+            self.store.update_project_status(project_id, "CANCELLED")
             self.store.add_evidence(project_id, "cancelled", {"project_id": project_id})
             clear_pid(project_id)
             raise
         except Exception as exc:
             emit(project_id, "ship_failed", error=str(exc))
             note = notify_failure(f"ma ship FAILED {project_id}: {type(exc).__name__}: {exc}")
+            self.store.update_project_status(project_id, "FAILED")
             self.store.add_evidence(project_id, "failure", {"error": str(exc), "notify": note})
             clear_pid(project_id)
             raise
+
+    def resume(
+        self,
+        project_id: str,
+        *,
+        verify_command: str | None = None,
+        merge: bool = False,
+        push: bool = False,
+        remote: str = "origin",
+        preflight: bool = True,
+        require_approval: bool = False,
+    ) -> dict:
+        """Resume an interrupted or failed project from its last uncompleted stage or task."""
+        project = self.store.get_project(project_id)
+        clear_cancel(project_id)
+        self._dead_models.clear()
+        self._replan_count = 0
+
+        # Reset any failed tasks back to READY
+        for t in self.store.list_tasks(project_id):
+            if t.get("status") in {"FAILED", "VERIFY_FAILED"}:
+                self.store.set_task_status(t["id"], "READY", project_id=project_id)
+
+        next_st = self.store.next_stage(project_id)
+        if next_st is None:
+            return {
+                "project_id": project_id,
+                "status": "DONE",
+                "message": "Project already completed all stages",
+            }
+
+        self.store.update_project_status(project_id, next_st.upper())
+        emit(project_id, "project_resumed", stage=next_st)
+        return self.ship(
+            project_id,
+            verify_command=verify_command,
+            merge=merge,
+            push=push,
+            remote=remote,
+            preflight=preflight,
+            require_approval=require_approval,
+        )
 
     def _context(self, project_id: str, stage: str) -> str:
         required = {

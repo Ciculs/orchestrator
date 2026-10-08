@@ -90,6 +90,18 @@ def parser() -> argparse.ArgumentParser:
     ship.add_argument("--workers", type=int, default=0)
     ship.add_argument("--require-approval", action="store_true", help="require ma approve before merge/push")
 
+    res = sub.add_parser("resume", help="Resume an existing project from its last uncompleted stage or task")
+    res.add_argument("project_id")
+    res.add_argument("--verify", default=None)
+    res.add_argument("--merge", action="store_true")
+    res.add_argument("--push", action="store_true")
+    res.add_argument("--remote", default="origin")
+    res.add_argument("--max-calls", type=int, default=None)
+    res.add_argument("--max-tokens", type=int, default=None)
+    res.add_argument("--max-replans", type=int, default=2)
+    res.add_argument("--workers", type=int, default=0)
+    res.add_argument("--require-approval", action="store_true", help="require ma approve before merge/push")
+
     usage = sub.add_parser("usage")
     usage.add_argument("project_id", nargs="?")
 
@@ -260,14 +272,14 @@ def main(argv=None) -> int:
         budget = None
         max_replans = 1
         workers = 0
-        if args.command == "ship":
+        if args.command in {"ship", "resume"}:
             budget = Budget(max_calls=args.max_calls, max_tokens=args.max_tokens)
             max_replans = args.max_replans
             workers = args.workers
 
         timeout_sec = getattr(args, "timeout", 120)
         client = NineRouterClient("http://127.0.0.1:20128", load_9router_key(), timeout=timeout_sec, attempts=3, budget=budget)
-        orchestrator = Orchestrator(store, client, max_workers=workers if args.command == "ship" else 2, budget=budget, max_replans=max_replans)
+        orchestrator = Orchestrator(store, client, max_workers=workers if args.command in {"ship", "resume"} else 2, budget=budget, max_replans=max_replans)
 
         if args.command == "run":
             print(json.dumps(orchestrator.run(args.project_id, until=args.until).__dict__, indent=2))
@@ -283,6 +295,17 @@ def main(argv=None) -> int:
             return 0
         if args.command == "merge":
             print(json.dumps(orchestrator.merge(args.project_id, push=args.push, remote=args.remote, require_approval=args.require_approval or args.push), indent=2, ensure_ascii=False))
+            return 0
+        if args.command == "resume":
+            result = orchestrator.resume(
+                args.project_id,
+                verify_command=args.verify,
+                merge=args.merge or args.push,
+                push=args.push,
+                remote=args.remote,
+                require_approval=args.require_approval or args.push,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
             return 0
         if args.command == "ship":
             repo = str(Path(args.repo).resolve())
