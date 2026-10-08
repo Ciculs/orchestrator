@@ -64,6 +64,42 @@ def read_pid(project_id: str) -> int | None:
         return None
 
 
+def is_process_alive(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == 259  # STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+
+def is_project_active(project_id: str) -> bool:
+    pid = read_pid(project_id)
+    if not pid:
+        return False
+    alive = is_process_alive(pid)
+    if not alive:
+        clear_pid(project_id)
+    return alive
+
+
 def request_cancel(project_id: str, *, hard: bool = True) -> dict:
     path = cancel_path(project_id)
     path.write_text(str(int(time.time())), encoding="utf-8")
@@ -104,7 +140,14 @@ def check_cancel(project_id: str):
         raise CancelledError(f"project {project_id} cancelled")
 
 
-def tail_events(project_id: str, *, follow: bool = False, sleep_s: float = 0.5, max_idle: float = 30.0):
+def tail_events(
+    project_id: str,
+    *,
+    follow: bool = False,
+    sleep_s: float = 0.5,
+    max_idle: float = 30.0,
+    skip_stream_chunks: bool = False,
+):
     path = events_path(project_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
@@ -118,7 +161,10 @@ def tail_events(project_id: str, *, follow: bool = False, sleep_s: float = 0.5, 
                 if not line:
                     continue
                 try:
-                    yield json.loads(line)
+                    ev = json.loads(line)
+                    if skip_stream_chunks and ev.get("event") in {"stream_chunk", "stream_thinking"}:
+                        continue
+                    yield ev
                 except json.JSONDecodeError:
                     continue
                 continue

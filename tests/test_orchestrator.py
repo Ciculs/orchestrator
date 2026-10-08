@@ -612,6 +612,57 @@ class EventsTests(unittest.TestCase):
             finally:
                 events.pid_path = old  # type: ignore
 
+    def test_is_process_alive_and_project_active(self):
+        import os
+        from ma import events
+
+        current_pid = os.getpid()
+        self.assertTrue(events.is_process_alive(current_pid))
+        self.assertFalse(events.is_process_alive(999999))
+        self.assertFalse(events.is_process_alive(None))
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            old = events.pid_path
+            events.pid_path = lambda project_id, base_dir=base: old(project_id, base_dir)  # type: ignore
+            try:
+                # Active project with real PID
+                events.write_pid("active_proj", current_pid)
+                self.assertTrue(events.is_project_active("active_proj"))
+
+                # Inactive project with dead PID: should return False and auto-clean PID
+                events.write_pid("dead_proj", 999999)
+                self.assertFalse(events.is_project_active("dead_proj"))
+                self.assertIsNone(events.read_pid("dead_proj"))
+            finally:
+                events.pid_path = old  # type: ignore
+
+    def test_tail_events_skip_stream_chunks(self):
+        from ma import events
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            old = events.events_path
+            events.events_path = lambda project_id, base_dir=base: old(project_id, base_dir)  # type: ignore
+            try:
+                pid = "stream_test"
+                events.emit(pid, "stage_start", stage="design")
+                events.emit(pid, "stream_chunk", chunk="hello ")
+                events.emit(pid, "stream_thinking", chunk="thinking ")
+                events.emit(pid, "stream_chunk", chunk="world")
+                events.emit(pid, "stage_done", stage="design")
+
+                # With skip_stream_chunks=True
+                all_events = list(events.tail_events(pid, follow=False, skip_stream_chunks=True))
+                event_names = [e["event"] for e in all_events]
+                self.assertEqual(event_names, ["stage_start", "stage_done"])
+
+                # With skip_stream_chunks=False
+                full_events = list(events.tail_events(pid, follow=False, skip_stream_chunks=False))
+                self.assertEqual(len(full_events), 5)
+            finally:
+                events.events_path = old  # type: ignore
+
 
 class QueueTests(unittest.TestCase):
     def test_enqueue_claim_complete(self):

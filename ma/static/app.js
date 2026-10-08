@@ -613,14 +613,23 @@ async function loadProjectsList() {
       item.className = `p-2.5 rounded-lg border cursor-pointer transition ${activeProjectId === p.id ? 'bg-cyan-950/40 border-cyan-500/60' : 'bg-slate-900 border-slate-800 hover:border-slate-700'}`;
       item.onclick = () => selectProject(p.id);
 
-      const statusColor = p.status === 'DONE' ? 'text-emerald-400 bg-emerald-950' : (p.status.includes('FAIL') ? 'text-rose-400 bg-rose-950' : 'text-cyan-400 bg-cyan-950');
-      const canResume = p.status !== 'DONE';
+      let statusBadge = '';
+      if (p.active) {
+        statusBadge = `<span class="inline-flex items-center space-x-1 text-[10px] font-mono px-1.5 py-0.5 rounded text-emerald-300 bg-emerald-950 border border-emerald-700/80"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span><span>RUNNING</span></span>`;
+      } else if (p.status === 'DONE') {
+        statusBadge = `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded text-emerald-400 bg-emerald-950">DONE</span>`;
+      } else if (p.status.includes('FAIL')) {
+        statusBadge = `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded text-rose-400 bg-rose-950">FAILED</span>`;
+      } else {
+        statusBadge = `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded text-amber-400 bg-amber-950">${p.status}</span>`;
+      }
+      const canResume = p.status !== 'DONE' && !p.active;
 
       item.innerHTML = `
         <div class="flex items-center justify-between">
           <span class="text-xs font-mono font-bold text-white">${p.id}</span>
           <div class="flex items-center space-x-1.5">
-            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColor}">${p.status}</span>
+            ${statusBadge}
             ${canResume ? `<button onclick="event.stopPropagation(); quickResumeProject('${p.id}')" title="Tiếp tục chạy dự án" class="p-1 rounded hover:bg-emerald-900/60 text-emerald-400 border border-emerald-800/60 bg-emerald-950/40 transition"><i data-lucide="play" class="w-2.5 h-2.5"></i></button>` : ''}
           </div>
         </div>
@@ -638,8 +647,6 @@ async function loadProjectsList() {
 function selectProject(projectId) {
   activeProjectId = projectId;
   document.getElementById('current-project-id').textContent = projectId;
-  document.getElementById('btn-soft-cancel').classList.remove('hidden');
-  document.getElementById('btn-hard-cancel').classList.remove('hidden');
 
   loadProjectDetails(projectId);
   startEventStream(projectId);
@@ -659,11 +666,74 @@ async function loadProjectDetails(projectId) {
     // Show or hide Resume button
     const resumeBtn = document.getElementById('btn-resume-project');
     if (resumeBtn) {
-      if (p.status !== 'DONE') {
+      if (p.status !== 'DONE' && !data.active) {
         resumeBtn.classList.remove('hidden');
       } else {
         resumeBtn.classList.add('hidden');
       }
+    }
+
+    // Cancel buttons visibility
+    const softBtn = document.getElementById('btn-soft-cancel');
+    const hardBtn = document.getElementById('btn-hard-cancel');
+    if (data.active) {
+      if (softBtn) softBtn.classList.remove('hidden');
+      if (hardBtn) hardBtn.classList.remove('hidden');
+    } else {
+      if (softBtn) softBtn.classList.add('hidden');
+      if (hardBtn) hardBtn.classList.add('hidden');
+    }
+
+    // Immediately update Pipeline Stage badges from completed stages
+    const stages = ['design', 'critique', 'judgment', 'implementation', 'verification', 'audit'];
+    if (data.stages && Array.isArray(data.stages)) {
+      const completedStages = new Set(data.stages.map(s => s.stage.toLowerCase()));
+      stages.forEach(s => {
+        const badge = document.getElementById(`stage-badge-${s}`);
+        if (!badge) return;
+        if (completedStages.has(s)) {
+          badge.className = 'p-2 rounded-lg border border-emerald-500 bg-emerald-950/50 text-emerald-400 font-bold';
+          highlightRoleCard(s, 'approved');
+        } else {
+          badge.className = 'p-2 rounded-lg border border-slate-800 bg-slate-900 text-slate-400';
+        }
+      });
+    }
+
+    // Immediately update Live AI Stream state if inactive
+    const dot = document.getElementById('live-indicator-dot');
+    const roleTitleEl = document.getElementById('live-role-title');
+    const statusSubEl = document.getElementById('live-status-sub');
+    const streamTextEl = document.getElementById('live-stream-text');
+    const cursorEl = document.getElementById('live-cursor');
+
+    if (!data.active) {
+      if (dot) dot.className = 'w-2 h-2 rounded-full bg-slate-500';
+      if (cursorEl) cursorEl.classList.add('hidden');
+
+      if (p.status === 'DONE') {
+        if (roleTitleEl) roleTitleEl.textContent = 'Dự án đã hoàn thành (DONE)';
+        if (statusSubEl) statusSubEl.textContent = 'Tất cả các giai đoạn và kiểm thử đã thực thi thành công.';
+        if (streamTextEl) {
+          streamTextEl.textContent = '✅ DỰ ÁN HOÀN THÀNH THÀNH CÔNG!\n\nĐã hoàn thành toàn bộ Task DAG, kiểm thử máy thật và bảo mật audit. Bạn có thể xem mã nguồn tại tab "Unified Code Diff" hoặc báo cáo tại tab "Thinking Artifacts".';
+        }
+      } else if (p.status.includes('FAIL')) {
+        if (roleTitleEl) roleTitleEl.textContent = 'Dự án tạm dừng do lỗi';
+        if (statusSubEl) statusSubEl.textContent = 'Tiến trình đã dừng. Bấm "Tiếp Tục Chạy" để tự động hoàn tất các task.';
+        if (streamTextEl) {
+          streamTextEl.textContent = `❌ DỰ ÁN ĐANG TẠM DỪNG / THẤT BẠI (${p.status})\n\n👉 Bấm nút "Tiếp Tục Chạy" màu xanh ở góc trên bên phải để tự động tiếp tục và hoàn tất các task còn thiếu mà không cần chạy lại từ đầu.`;
+        }
+      } else {
+        if (roleTitleEl) roleTitleEl.textContent = `Dự án tạm dừng tại: ${p.status}`;
+        if (statusSubEl) statusSubEl.textContent = 'Tiến trình hiện không chạy. Sẵn sàng tiếp tục.';
+        if (streamTextEl) {
+          streamTextEl.textContent = `⏸️ DỰ ÁN ĐANG TẠM DỪNG (${p.status})\n\n👉 Bấm nút "Tiếp Tục Chạy" màu xanh ở góc trên bên phải để kích hoạt lại pipeline.`;
+        }
+      }
+    } else {
+      if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+      if (roleTitleEl) roleTitleEl.textContent = `Đang thực thi: ${p.status} (PID: ${data.pid || 'Active'})`;
+      if (statusSubEl) statusSubEl.textContent = 'Tiến trình đang chạy ngầm. Đang kết nối luồng token thời gian thực...';
     }
 
     // Diff Viewer
@@ -867,12 +937,52 @@ function handleLiveStreamEvent(ev) {
     return;
   }
 
-  if (eventName === 'ship_failed') {
+  if (eventName === 'stream_sync') {
+    const dot = document.getElementById('live-indicator-dot');
+    if (!ev.active) {
+      if (dot) dot.className = 'w-2 h-2 rounded-full bg-slate-500';
+      if (cursorEl) cursorEl.classList.add('hidden');
+    } else {
+      if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+    }
+    return;
+  }
+
+  if (eventName === 'stream_idle') {
+    const dot = document.getElementById('live-indicator-dot');
+    if (dot) dot.className = 'w-2 h-2 rounded-full bg-slate-500';
     if (cursorEl) cursorEl.classList.add('hidden');
-    if (statusSubEl) statusSubEl.textContent = `Thất bại: ${ev.error || 'Unknown error'}`;
+    return;
+  }
+
+  if (eventName === 'ship_done' || eventName === 'ship_complete' || eventName === 'merge_done') {
+    if (cursorEl) cursorEl.classList.add('hidden');
+    const dot = document.getElementById('live-indicator-dot');
+    if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
+    if (roleTitleEl) roleTitleEl.textContent = 'Dự án đã hoàn thành (DONE)';
+    if (statusSubEl) statusSubEl.textContent = 'Tất cả giai đoạn đã hoàn tất thành công.';
+    if (streamTextEl) {
+      streamTextEl.textContent = '✅ DỰ ÁN ĐÃ HOÀN THÀNH THÀNH CÔNG!\n\nĐã hoàn thành toàn bộ Task DAG, kiểm thử máy thật và bảo mật audit. Bạn có thể xem mã nguồn tại tab "Unified Code Diff" hoặc báo cáo tại tab "Thinking Artifacts".';
+    }
     if (activeProjectId) {
       loadProjectDetails(activeProjectId);
     }
+    return;
+  }
+
+  if (eventName === 'ship_failed') {
+    if (cursorEl) cursorEl.classList.add('hidden');
+    const dot = document.getElementById('live-indicator-dot');
+    if (dot) dot.className = 'w-2 h-2 rounded-full bg-rose-500';
+    if (roleTitleEl) roleTitleEl.textContent = 'Dự án tạm dừng do lỗi';
+    if (statusSubEl) statusSubEl.textContent = `Thất bại: ${ev.error || 'Unknown error'}`;
+    if (streamTextEl) {
+      streamTextEl.textContent = `❌ DỰ ÁN TẠM DỪNG / THẤT BẠI: ${ev.error || 'Unknown error'}\n\n👉 Bấm nút "Tiếp Tục Chạy" màu xanh ở góc trên bên phải để tự động tiếp tục và thử lại các task còn thiếu.`;
+    }
+    if (activeProjectId) {
+      loadProjectDetails(activeProjectId);
+    }
+    return;
   }
 }
 
@@ -882,14 +992,12 @@ function startEventStream(projectId) {
   }
 
   const logsEl = document.getElementById('terminal-logs');
-  logsEl.innerHTML = `<div class="text-slate-500">// Bắt đầu stream event cho project ${projectId}...</div>`;
+  logsEl.innerHTML = `<div class="text-slate-500">// Đồng bộ stream event cho project ${projectId}...</div>`;
 
   liveStreamTextBuffer = '';
   liveThinkingTextBuffer = '';
   isFirstLiveChunk = true;
 
-  const streamTextEl = document.getElementById('live-stream-text');
-  if (streamTextEl) streamTextEl.textContent = `Đang kết nối live stream cho dự án ${projectId}...`;
   const thinkingBox = document.getElementById('live-thinking-box');
   if (thinkingBox) thinkingBox.classList.add('hidden');
   const ttftBadge = document.getElementById('live-ttft-badge');

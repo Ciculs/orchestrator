@@ -27,7 +27,7 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from .approve import grant_approval, revoke_approval
 from .config import load_config, save_config
-from .events import events_path, request_cancel, tail_events
+from .events import events_path, is_project_active, read_pid, request_cancel, tail_events
 from .ops import doctor
 from .orchestrator import load_9router_key
 from .router import NineRouterClient, fetch_available_models
@@ -131,6 +131,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                 store = TaskStore(self.store_path)
                 try:
                     projects = store.list_projects()
+                    for p in projects:
+                        p["active"] = is_project_active(p["id"])
                     return self._send_json({"projects": projects})
                 finally:
                     store.close()
@@ -166,6 +168,8 @@ class UIRequestHandler(BaseHTTPRequestHandler):
                         "tasks": tasks,
                         "evidences": evidences,
                         "diff": diff,
+                        "active": is_project_active(project_id),
+                        "pid": read_pid(project_id),
                     })
                 finally:
                     store.close()
@@ -515,12 +519,75 @@ Hãy tạo 2 prompt tiếng Anh chuẩn:
         self._send_cors()
         self.end_headers()
 
-        # Stream existing events then follow new events
+        path = events_path(project_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+
+        is_active = is_project_active(project_id)
+
         try:
-            for ev in tail_events(project_id, follow=True, sleep_s=0.08, max_idle=300.0):
-                msg = f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-                self.wfile.write(msg.encode("utf-8"))
+            # Phase 1: Replay backlog with ultra-low latency
+            # Filter out historical raw stream_chunk/stream_thinking so browser doesn't freeze
+            backlog_events = []
+            with path.open("r", encoding="utf-8") as f:
+                while True:
+                    line = f.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                        event_type = ev.get("event", "")
+                        if event_type in {"stream_chunk", "stream_thinking"}:
+                            continue
+                        backlog_events.append(ev)
+                    except json.JSONDecodeError:
+                        continue
+
+                # Batch write all historical structural events at once
+                if backlog_events:
+                    payload = "".join(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n" for ev in backlog_events)
+                    self.wfile.write(payload.encode("utf-8"))
+
+                # Send stream_sync milestone
+                sync_msg = {
+                    "event": "stream_sync",
+                    "project_id": project_id,
+                    "active": is_active,
+                    "backlog_count": len(backlog_events),
+                    "ts": int(time.time()),
+                }
+                self.wfile.write(f"data: {json.dumps(sync_msg, ensure_ascii=False)}\n\n".encode("utf-8"))
                 self.wfile.flush()
+
+                # Phase 2: Live follow loop for incoming events
+                last_ping = time.time()
+                while True:
+                    line = f.readline()
+                    if line:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                            msg = f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+                            self.wfile.write(msg.encode("utf-8"))
+                            self.wfile.flush()
+                        except json.JSONDecodeError:
+                            continue
+                        continue
+
+                    active = is_project_active(project_id)
+                    sleep_s = 0.05 if active else 0.4
+                    time.sleep(sleep_s)
+
+                    now = time.time()
+                    if now - last_ping > 15.0:
+                        self.wfile.write(b": ping\n\n")
+                        self.wfile.flush()
+                        last_ping = now
         except (BrokenPipeError, ConnectionResetError):
             pass
 
