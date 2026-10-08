@@ -1160,6 +1160,59 @@ class ResumptionPipelineTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_ready_waves_handles_ghost_dependencies(self):
+        # T2 depends on ghost ID 'GHOST-01' which does not exist in tasks or done
+        tasks = [
+            {"id": "T1", "depends_on": [], "status": "READY"},
+            {"id": "T2", "depends_on": ["GHOST-01", "T1"], "status": "READY"},
+            {"id": "T3", "depends_on": ["T2"], "status": "READY"},
+        ]
+        waves = ready_waves(tasks)
+        self.assertEqual(len(waves), 3)
+        self.assertEqual([t["id"] for t in waves[0]], ["T1"])
+        self.assertEqual([t["id"] for t in waves[1]], ["T2"])
+        self.assertEqual([t["id"] for t in waves[2]], ["T3"])
+
+    def test_ready_waves_breaks_circular_deadlock(self):
+        # T1 depends on T2, and T2 depends on T1
+        tasks = [
+            {"id": "T1", "depends_on": ["T2"], "status": "READY"},
+            {"id": "T2", "depends_on": ["T1"], "status": "READY"},
+        ]
+        # Should not raise TaskSpecError, breaks cycle gracefully
+        waves = ready_waves(tasks)
+        self.assertEqual(len(waves), 2)
+        all_ids = [t["id"] for w in waves for t in w]
+        self.assertIn("T1", all_ids)
+        self.assertIn("T2", all_ids)
+
+    def test_resume_sanitizes_ghost_dependencies(self):
+        with tempfile.TemporaryDirectory() as d:
+            db_path = Path(d) / "test.db"
+            store = TaskStore(db_path)
+            try:
+                pid = store.create_project("test", "/tmp", "goal")
+                tasks = [
+                    {"id": "TASK-01-NEW", "goal": "g1", "allowed_files": ["."], "verify_command": "", "depends_on": []},
+                    {"id": "TASK-02-FOO", "goal": "g2", "allowed_files": ["."], "verify_command": "", "depends_on": ["TASK-01-OLD", "NON-EXISTENT"]},
+                ]
+                store.replace_tasks(pid, tasks)
+                store.record_stage(pid, "design", "m", "p", "art")
+
+                client = NineRouterClient("http://x", "k")
+                orch = Orchestrator(store, client)
+
+                # Mock ship so resume only runs pre-checks
+                orch.ship = lambda project_id, **kwargs: {"ok": True}
+                orch.resume(pid)
+
+                # Verify TASK-02-FOO was remapped from TASK-01-OLD to TASK-01-NEW and NON-EXISTENT was pruned
+                updated = store.list_tasks(pid)
+                t2 = next(t for t in updated if t["id"] == "TASK-02-FOO")
+                self.assertEqual(t2["depends_on"], ["TASK-01-NEW"])
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -275,9 +275,16 @@ def ready_waves(tasks: list[dict], done: set[str] | None = None) -> list[list[di
     Partition tasks into execution waves.
     A task is ready when all depends_on are done in previous waves.
     Within a wave, tasks must not share allowed_files (file lock).
+    Prunes orphaned/ghost dependencies and breaks circular dependencies gracefully.
     """
     remaining = {t["id"]: dict(t) for t in tasks}
     done_set: set[str] = set(done) if done else set()
+    known_ids = set(remaining.keys()) | done_set
+
+    # Filter out ghost dependencies that do not exist anywhere in remaining or done
+    for t in remaining.values():
+        t["depends_on"] = [d for d in t.get("depends_on", []) if d in known_ids]
+
     waves: list[list[dict]] = []
     while remaining:
         candidates = [
@@ -286,7 +293,11 @@ def ready_waves(tasks: list[dict], done: set[str] | None = None) -> list[list[di
             if all(dep in done_set for dep in t.get("depends_on", []))
         ]
         if not candidates:
-            raise TaskSpecError(f"deadlock in task DAG; remaining={list(remaining)}")
+            # Cycle or unresolved deadlock: pick candidate with minimum unmet remaining deps
+            candidates = sorted(
+                remaining.values(),
+                key=lambda x: (len([d for d in x.get("depends_on", []) if d in remaining]), x["id"])
+            )[:1]
         # stable order by id
         candidates.sort(key=lambda x: x["id"])
         wave: list[dict] = []

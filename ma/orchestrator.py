@@ -567,6 +567,17 @@ class Orchestrator:
                     and t["id"] not in new_ids
                 ]
 
+                # Remap dependencies from failed tasks to their replanned replacements
+                failed_to_new = {fid: list(new_ids) for fid in failed_ids}
+                for t in leftovers:
+                    new_deps = []
+                    for dep in t.get("depends_on", []):
+                        if dep in failed_to_new:
+                            new_deps.extend(failed_to_new[dep])
+                        else:
+                            new_deps.append(dep)
+                    t["depends_on"] = list(dict.fromkeys(new_deps))
+
                 # wave tasks that failed are dropped in favor of replan
                 pending = leftovers + [
                     {
@@ -774,10 +785,32 @@ class Orchestrator:
         self._dead_models.clear()
         self._replan_count = 0
 
-        # Reset any failed tasks back to READY
-        for t in self.store.list_tasks(project_id):
-            if t.get("status") in {"FAILED", "VERIFY_FAILED"}:
-                self.store.set_task_status(t["id"], "READY", project_id=project_id)
+        # Reset any failed tasks back to READY and sanitize dependencies against ghost IDs
+        existing_tasks = self.store.list_tasks(project_id)
+        if existing_tasks:
+            task_ids = {t["id"] for t in existing_tasks}
+            tasks_modified = False
+            for t in existing_tasks:
+                if t.get("status") in {"FAILED", "VERIFY_FAILED"}:
+                    t["status"] = "READY"
+                    tasks_modified = True
+                remapped = []
+                for dep in t.get("depends_on", []):
+                    if dep in task_ids:
+                        remapped.append(dep)
+                    else:
+                        parts = dep.split("-")
+                        prefix = parts[0] + "-" + parts[1] if len(parts) >= 2 else dep
+                        match = next((x for x in task_ids if x.startswith(prefix)), None)
+                        if match:
+                            remapped.append(match)
+                        tasks_modified = True
+                new_deps = list(dict.fromkeys(remapped))
+                if new_deps != t.get("depends_on", []):
+                    t["depends_on"] = new_deps
+                    tasks_modified = True
+            if tasks_modified:
+                self.store.replace_tasks(project_id, existing_tasks)
 
         next_st = self.store.next_stage(project_id)
         if next_st is None:
