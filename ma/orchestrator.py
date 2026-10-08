@@ -441,6 +441,35 @@ class Orchestrator:
                     errors="replace",
                     capture_output=True,
                 )
+                # Auto-heal Prettier code style check failures
+                if proc.returncode != 0 and "prettier" in verify_cmd and ("--check" in verify_cmd or "Run Prettier with --write to fix" in (proc.stderr + proc.stdout)):
+                    try:
+                        fmt_cmd = verify_cmd.replace("--check", "--write")
+                        subprocess.run(
+                            fmt_cmd,
+                            cwd=workspace.path,
+                            shell=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            capture_output=True,
+                        )
+                        status = workspace._run(["git", "status", "--porcelain"])
+                        if status.stdout.strip():
+                            workspace._run(["git", "add", "-A"])
+                            workspace._run(["git", "commit", "--amend", "--no-edit"])
+                        proc = subprocess.run(
+                            verify_cmd,
+                            cwd=workspace.path,
+                            shell=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            capture_output=True,
+                        )
+                    except Exception:
+                        pass
+
                 verify_evidence = {
                     "command": verify_cmd,
                     "exit_code": proc.returncode,
@@ -584,7 +613,8 @@ class Orchestrator:
                     f"CURRENT PLAN:\n{self.store.get_artifact(project_id, 'judgment')}\n\n"
                     f"FAILED TASKS:\n{fail_report}\n\n"
                     "Replan ONLY the failed work as a JSON task array with id/goal/allowed_files/verify_command/depends_on. "
-                    "Do not redo successful tasks. Keep allowed_files minimal."
+                    "Do not redo successful tasks. Keep allowed_files minimal. "
+                    "For verify_command, prefer compiler and test commands (such as 'npx tsc --noEmit' or test suites) rather than formatting checks."
                 )
                 judge_sys = self.systems.get("judgment", SYSTEMS["judgment"])
                 result, model, errors = self._call_role("judgment", replan_prompt, judge_sys, project_id=project_id)

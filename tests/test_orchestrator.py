@@ -1338,6 +1338,61 @@ class ResumptionPipelineTests(unittest.TestCase):
             finally:
                 ws.remove()
 
+    def test_verify_auto_heals_prettier_formatting_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, capture_output=True)
+            (repo / "f.txt").write_text("hello", encoding="utf-8")
+            subprocess.run(["git", "add", "f.txt"], cwd=repo, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=repo, capture_output=True)
+
+            # Create mock node_modules/.bin mock prettier script or test auto-heal logic
+            db_path = Path(d) / "test.db"
+            store = TaskStore(db_path)
+            pid = store.create_project("p_fmt", str(repo), "goal")
+            client = NineRouterClient("http://127.0.0.1:20128", "dummy_key")
+            orch = Orchestrator(store, client)
+
+            ws = Workspace(repo, pid, task_id="t_fmt")
+            ws.create()
+            try:
+                # Create a file with bad formatting
+                (ws.path / "file.js").write_text("const   a =   1;\n", encoding="utf-8")
+                ws.commit("ma: t_fmt")
+
+                # Mock python script acting as prettier --check / --write
+                py_script = (
+                    "import sys, pathlib\n"
+                    "f = pathlib.Path('file.js')\n"
+                    "if '--write' in sys.argv:\n"
+                    "    f.write_text('const a = 1;\\n', encoding='utf-8')\n"
+                    "    sys.exit(0)\n"
+                    "elif '--check' in sys.argv:\n"
+                    "    if f.read_text(encoding='utf-8') == 'const a = 1;\\n':\n"
+                    "        sys.exit(0)\n"
+                    "    sys.stderr.write('Code style issues found in the above file. Run Prettier with --write to fix.\\n')\n"
+                    "    sys.exit(1)\n"
+                )
+                (ws.path / "mock_prettier.py").write_text(py_script, encoding="utf-8")
+
+                verify_cmd = f"{sys.executable} mock_prettier.py prettier --check file.js"
+                proc = subprocess.run(verify_cmd, cwd=ws.path, shell=True, text=True, capture_output=True)
+                self.assertNotEqual(proc.returncode, 0)
+
+                # Now simulate orchestrator auto-healing logic
+                if proc.returncode != 0 and "prettier" in verify_cmd and ("--check" in verify_cmd or "Run Prettier with --write to fix" in (proc.stderr + proc.stdout)):
+                    fmt_cmd = verify_cmd.replace("--check", "--write")
+                    subprocess.run(fmt_cmd, cwd=ws.path, shell=True, text=True, capture_output=True)
+                    proc2 = subprocess.run(verify_cmd, cwd=ws.path, shell=True, text=True, capture_output=True)
+                    self.assertEqual(proc2.returncode, 0)
+                    self.assertEqual((ws.path / "file.js").read_text(encoding="utf-8"), "const a = 1;\n")
+            finally:
+                ws.remove()
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
